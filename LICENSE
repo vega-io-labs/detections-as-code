@@ -1,0 +1,66 @@
+Detection-as-Code Template License
+Version 1.0, May 2026
+
+Copyright 2026 Vega Security
+
+This license governs use of the Detection-as-Code template repository
+("the Software"), distributed by Vega Security ("Licensor") to enable
+Vega customers to author, version-control, and synchronize
+tenant-custom detection content to their Vega tenants.
+
+1. Grant of License
+
+   Subject to the terms below, Licensor grants you a worldwide,
+   non-exclusive, royalty-free, perpetual license to:
+
+   a. Use, fork, copy, and modify the Software.
+   b. Create and maintain derivative detection rules and supporting
+      code in a fork of the Software.
+   c. Distribute the Software, in original or modified form, within
+      your organization and to your contractors, solely for the
+      purpose of operating Detection-as-Code against your Vega
+      tenants.
+
+2. Conditions on Redistribution
+
+   Any redistribution, in original or modified form, must:
+
+   a. Retain this license file, including the copyright notice above.
+   b. Identify any modifications made to the Software so that
+      recipients can distinguish original content from derivatives.
+
+3. Patent Grant
+
+   Licensor grants you a non-exclusive, royalty-free, irrevocable
+   patent license under any patents owned by Licensor that are
+   necessarily infringed by the unmodified Software, solely for the
+   purposes granted in Section 1. This patent license terminates
+   immediately upon initiation of patent litigation alleging that the
+   Software infringes any patent.
+
+4. Trademarks
+
+   This license does not grant permission to use the trade names,
+   trademarks, service marks, or product names of Licensor, including
+   "Vega" and "Vega Security", except as reasonably required to
+   describe the origin of the Software or to identify integration
+   with a Vega tenant.
+
+5. Disclaimer of Warranty
+
+   THE SOFTWARE AND ANY EXAMPLE DETECTIONS, RULES, OR QUERIES
+   CONTAINED WITHIN IT ARE PROVIDED "AS IS", WITHOUT WARRANTY OF ANY
+   KIND, EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED TO WARRANTIES
+   OF MERCHANTABILITY, FITNESS FOR A PARTICULAR PURPOSE, AND
+   NON-INFRINGEMENT. EXAMPLE DETECTION CONTENT IS PROVIDED FOR
+   ILLUSTRATIVE PURPOSES AND REQUIRES INDEPENDENT REVIEW AND TUNING
+   BY YOU PRIOR TO USE IN A PRODUCTION ENVIRONMENT.
+
+6. Limitation of Liability
+
+   IN NO EVENT SHALL LICENSOR BE LIABLE FOR ANY DIRECT, INDIRECT,
+   INCIDENTAL, SPECIAL, EXEMPLARY, OR CONSEQUENTIAL DAMAGES
+   (INCLUDING BUT NOT LIMITED TO LOSS OF USE, DATA, OR PROFITS, OR
+   BUSINESS INTERRUPTION) HOWEVER CAUSED AND ON ANY THEORY OF
+   LIABILITY, ARISING IN ANY WAY OUT OF THE USE OF THE SOFTWARE,
+   EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.

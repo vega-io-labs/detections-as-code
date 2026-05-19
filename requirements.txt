@@ -1,0 +1,6 @@
+requests>=2.31
+PyYAML>=6.0
+gql[requests]>=3.5
+click>=8.1
+rich>=13.0
+tenacity>=8.2

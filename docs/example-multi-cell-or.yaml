@@ -1,0 +1,93 @@
+# Pattern 3 of 4: MULTI-CELL OR (state cells + trigger union)
+#
+# N state cells each define an independent signal. The trigger cell
+# composes them with comma-separated @CellName references. A hit on
+# ANY of the state cells fires the detection (OR semantics).
+#
+# When to use:
+#   - The detection wants to alert if ANY of several distinct signals
+#     fires, and the signals are too different to express as a single
+#     `| where x or y or z` clause (different cmdlines, different
+#     fields, different event types, different filter conditions).
+#   - Each signal individually is suspicious; combining them under one
+#     detection keeps alert routing and triage workflow unified
+#     instead of fanning out into N near-identical detections.
+#
+# How the OR works:
+#   - Each state cell is an independent `@DataSource | where ...` query.
+#   - The trigger cell's query is a comma-separated list of @StateCellName
+#     references. Comma between cell refs = union (OR) semantics.
+#   - For AND / correlation across cells, use a `| join` in the trigger
+#     instead; for chained pipelines (cell B narrows cell A), see
+#     example-multi-cell-chain.yaml.
+#
+# Rules enforced by the PR lint (apply to every multi-cell detection):
+#   - YAML provides `cells:` (not `query:`).
+#   - Each cell has a `name` (must NOT start with @) and a `query`.
+#   - Exactly one cell has `trigger: true`.
+#   - Cell names are unique within the detection.
+
+id: "019e1801-aaaa-7000-9000-000000000001"
+name: "Mimikatz Credential Theft - Multi-Signal"
+severity: 4
+state: "test_mode"
+frequencyCron: "5m"
+lookBackSeconds: 300
+mitreTechniques:
+  - "T1003"
+logicDescription: "Matches EDR-Events that hit any of six Mimikatz signals: tool execution by filename, written .kirbi / mimilsa.log files, sekurlsa::pth pass-the-hash module calls, lsadump::dcsync commands, lsadump::sam / lsadump::secrets LSA-dump commands, or UseLogonCredential=1 WDigest registry tampering."
+attackScenario: "An adversary runs Mimikatz on a Windows host to extract credentials, Kerberos tickets, or access tokens to enable lateral movement and privilege escalation. Any of these signals individually indicates a credential-dumping attempt; combining them into one detection unifies the alert routing and triage workflow."
+references:
+  - "https://attack.mitre.org/techniques/T1003/"
+
+cells:
+  - name: "tool-execution"
+    query: |-
+      @EDR-Events
+      | where file.path has_any (
+          "mimikatz.exe", "mimi.exe", "kiwi.exe", "sekurlsa.exe",
+          "mimikatz64.exe", "mimikatz32.exe", "mimi64.exe", "mimi32.exe"
+        )
+      | where device.os.name contains "windows"
+
+  - name: "credential-artifacts"
+    query: |-
+      @EDR-Events
+      | where file.name endswith ".kirbi" or file.name endswith "mimilsa.log"
+      | where device.os.name contains "windows"
+
+  - name: "pass-the-hash"
+    query: |-
+      @EDR-Events
+      | where process.cmd_line contains "sekurlsa::pth"
+      | where device.os.name contains "windows"
+
+  - name: "dcsync"
+    query: |-
+      @EDR-Events
+      | where process.cmd_line contains "lsadump::dcsync"
+      | where device.os.name contains "windows"
+
+  - name: "lsa-dump"
+    query: |-
+      @EDR-Events
+      | where process.cmd_line contains "lsadump::sam"
+         or process.cmd_line contains "lsadump::secrets"
+      | where device.os.name contains "windows"
+
+  - name: "wdigest-tampering"
+    query: |-
+      @EDR-Events
+      | where reg_value.name contains "UseLogonCredential"
+      | where reg_value.data == "1"
+      | where device.os.name contains "windows"
+
+  - name: "trigger"
+    trigger: true
+    query: |-
+      @tool-execution,
+      @credential-artifacts,
+      @pass-the-hash,
+      @dcsync,
+      @lsa-dump,
+      @wdigest-tampering

@@ -1,0 +1,38 @@
+# Vega Detection-as-Code - YAML template
+#
+# Copy this file into detections/ (any subfolder is fine), rename it,
+# and fill in the values. One detection per file.
+#
+# Required fields below MUST all be set explicitly. The PR-validate lint
+# rejects any missing one before the API is touched.
+#
+# See docs/fields.md for the full field reference.
+
+# ----- REQUIRED -----
+
+id: "REPLACE-WITH-A-UUID-V7"                    # uuidgen -7 / python -c "import uuid; print(uuid.uuid7())"
+name: "REPLACE WITH A SHORT, SPECIFIC NAME"     # 1-200 characters
+severity: 3                                      # 1=LOW, 2=MEDIUM, 3=HIGH, 4=CRITICAL
+state: "enabled"                                 # enabled | disabled | test_mode
+frequencyCron: "5m"                              # schedule the detection runs on
+lookBackSeconds: 300                             # query lookback window, in seconds; must be > 0
+query: |-
+  @CloudTrail
+  | where event_name =~ "ConsoleLogin"
+  | where actor.user.type =~ "Root"
+
+# ----- OPTIONAL -----
+
+# logicDescription = literal description of what the query matches
+# (data source, events, fields). 2-4 sentences.
+logicDescription: "Matches <data source> events where <conditions>. Two-to-four sentences describing the query literally."
+# attackScenario = why an adversary would trigger these events. 2-4
+# sentences from the attacker's perspective. Keep separate from
+# logicDescription.
+attackScenario: "An adversary <does what> to <achieve what goal>. Two-to-four sentences explaining why these events indicate malicious activity."
+
+mitreTechniques: []                              # e.g. ["T1078.004"]; list the most specific applicable subtechnique only. Tactics are derived server-side.
+references: []                                   # e.g. ["https://attack.mitre.org/techniques/T1078/004/"]
+
+groupingFields: []                               # e.g. ["actor.user.name"]
+groupingDurationSeconds: null                    # int in seconds, or null

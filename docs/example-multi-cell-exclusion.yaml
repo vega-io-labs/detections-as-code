@@ -1,0 +1,55 @@
+# Pattern 2 of 4: MULTI-CELL WITH EXCLUSION
+#
+# Same root detection as example-single-cell.yaml (AWS Root Account
+# Console Login). Two cells: a state cell defines the rule's match
+# logic; the trigger cell references it and applies inline `where not`
+# clauses to exclude approved (account.id, src_endpoint.ip) tuples.
+#
+# Cell reference forms:
+#   - On first write the trigger can reference the state cell with the
+#     shorthand `@<cell-name>` (e.g. `@Root-User-Console-Login-Events`).
+#   - On save the server rewrites that to the canonical form
+#     `@cells:<refId>/<cell-name>`. Both forms work; the canonical form
+#     is what you see in detections you've exported or pulled back
+#     from the API. This example shows the canonical form.
+#
+# Rules enforced by the PR lint (apply to every multi-cell detection):
+#   - YAML provides `cells:` (not `query:`).
+#   - Each cell has a `name` (must NOT start with @) and a `query`.
+#   - Exactly one cell has `trigger: true`.
+#   - Cell names are unique within the detection.
+
+id: "019e2059-b6b2-79fb-b86a-b597a82b0899"
+name: "AWS Root Account Console Login (with break-glass exclusions)"
+severity: 4
+state: "test_mode"
+frequencyCron: "5m"
+lookBackSeconds: 300
+mitreTechniques:
+  - "T1078.004"
+logicDescription: "Matches AWS CloudTrail ConsoleLogin events where the actor is the account root user, with an inline where-not clause excluding an enumerated allowlist of (account.id, src_endpoint.ip) tuples that represent approved break-glass usage from known jump-box environments."
+attackScenario: "An adversary with stolen AWS root credentials logs in to the console from outside the approved break-glass environments. Day-to-day IAM should use scoped roles, so any root login that isn't an explicit break-glass tuple surfaces as high-confidence-suspicious."
+references:
+  - "https://docs.aws.amazon.com/IAM/latest/UserGuide/root-user-best-practices.html"
+  - "https://attack.mitre.org/techniques/T1078/004/"
+groupingFields:
+  - "account.id"
+  - "actor.user.name"
+groupingDurationSeconds: 900
+
+cells:
+  - name: "Root-User-Console-Login-Events"
+    query: |-
+      @CloudTrail
+      | where event_name =~ "ConsoleLogin"
+      | where actor.user.type =~ "Root"
+
+  - name: "trigger"
+    trigger: true
+    query: |-
+      @cells:W4Q4Z/Root-User-Console-Login-Events
+      | where not (
+          (account.id == "123456789012" and src_endpoint.ip == "203.0.113.10")
+          or (account.id == "123456789012" and src_endpoint.ip == "203.0.113.11")
+          or (account.id == "210987654321" and src_endpoint.ip == "198.51.100.42")
+        )

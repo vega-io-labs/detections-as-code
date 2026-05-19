@@ -1,0 +1,36 @@
+# Pattern 1 of 4: SINGLE-CELL
+#
+# One KQL pipeline. No correlation across queries, no exclusion
+# population that requires a separate query.
+#
+# Use single-cell when:
+#   - The detection logic can be expressed as one `@DataSource | where ...`
+#     pipeline.
+#   - Exclusions can be inlined as additional `| where ... !=` clauses or
+#     resolved via a lookup table (`@lookup_tables:<ref>/<title>`).
+#
+# For correlation across queries, anti-join against a dynamic exclusion
+# population, or step-wise narrowing across data sources, see the other
+# example files in this folder.
+
+id: "019e2059-b6a5-70c3-97e4-4442779a1652"
+name: "AWS Root Account Console Login"
+severity: 4                                  # CRITICAL
+state: "test_mode"                            # promote to "enabled" after validating
+frequencyCron: "5m"
+lookBackSeconds: 300                          # 5 minutes
+mitreTechniques:
+  - "T1078.004"
+logicDescription: "Matches AWS CloudTrail ConsoleLogin events where the actor is the account root user."
+attackScenario: "An adversary with stolen AWS root credentials (recovered from a breach, an exposed credential file, or social engineering) logs in to the console to perform privileged actions outside the normal scoped-IAM access pattern. Root logins are exceedingly rare in healthy environments because day-to-day IAM should use scoped roles, so any root login warrants investigation."
+references:
+  - "https://docs.aws.amazon.com/IAM/latest/UserGuide/root-user-best-practices.html"
+  - "https://attack.mitre.org/techniques/T1078/004/"
+groupingFields:
+  - "actor.user.name"
+groupingDurationSeconds: 900                  # 15 minutes
+
+query: |-
+  @CloudTrail
+  | where event_name =~ "ConsoleLogin"
+  | where actor.user.type =~ "Root"

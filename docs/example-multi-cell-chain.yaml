@@ -1,0 +1,94 @@
+# Pattern 4 of 4: MULTI-CELL CHAIN (cells pipe into one another)
+#
+# Cells reference other cells in their own pipelines, forming a chain:
+# cell A produces a result set, cell B narrows or correlates A with
+# another source, and the trigger applies a final filter to B.
+#
+# When to use:
+#   - The detection logic needs a multi-step pipeline that crosses data
+#     sources or time windows. A typical shape:
+#       step 1: identify a suspicious population (e.g., users who did X)
+#       step 2: narrow it to those who then did Y in another data source
+#       step 3: trigger on the subset that also matches Z
+#   - Each intermediate cell is named so an analyst opening the
+#     detection in Vega's notebook view can see the partial result at
+#     each step.
+#
+# How chaining works in Vega KQL:
+#   - Any cell's query can reference another cell with `@CellName`.
+#   - The server resolves refs at runtime, so an N-cell chain works as
+#     long as no reference is circular and the trigger transitively
+#     reaches every referenced cell.
+#
+# Rules enforced by the PR lint (apply to every multi-cell detection):
+#   - YAML provides `cells:` (not `query:`).
+#   - Each cell has a `name` (must NOT start with @) and a `query`.
+#   - Exactly one cell has `trigger: true`.
+#   - Cell names are unique within the detection.
+#
+# Caveat: PR lint does not catch unresolved `@cellname` refs or orphan
+# (defined-but-unreferenced) cells. The sync API also doesn't reject
+# them today. Mistakes here surface as a healthy-looking detection that
+# never fires. Double-check your chain in dry-run before merging.
+
+id: "019e2059-b6c8-7742-a8d6-4f85844bc29c"
+name: "Tor Login -> Privileged AWS Action"
+severity: 4                                  # CRITICAL
+state: "test_mode"
+frequencyCron: "10m"
+lookBackSeconds: 3600                         # 1 hour
+mitreTechniques:
+  - "T1078"                                   # Valid Accounts
+  - "T1098"                                   # Account Manipulation
+  - "T1090.003"                               # Multi-hop Proxy / Tor
+logicDescription: "Matches Okta successful logins whose source IP appears in the Tor-exit lookup table, inner-joined against CloudTrail Create/Put/Update/Attach events by the same actor email within one hour, and finally filtered to actions against the IAM, STS, KMS, or Secrets Manager services."
+attackScenario: "An adversary with stolen admin credentials routes their Okta login through Tor for anonymity, then pivots into AWS to create or modify privileged resources (new IAM users, new access keys, policy attachments) for persistence and privilege escalation. The chain narrows broad Tor-login signal down to the high-fidelity subset of Tor logins followed by privileged-service writes so analyst time is spent on the actionable cases."
+references:
+  - "https://attack.mitre.org/techniques/T1090/003/"
+groupingFields:
+  - "actor.user.email"
+groupingDurationSeconds: 3600
+
+cells:
+  - name: "tor-okta-logins"
+    # Step 1: Okta sessions whose source IP appears in our Tor-exit
+    # lookup table. (Lookup tables are managed in the Vega UI; the
+    # lookup_tables: reference must already exist in the tenant.)
+    query: |-
+      @Okta-System-Logs
+      | where eventType =~ "user.session.start"
+      | where outcome.result =~ "SUCCESS"
+      | project time, actor.user.email, src_endpoint.ip
+      | join kind=inner (
+          @lookup_tables:tor-exits/Tor-Exit-Nodes
+          | project tor_ip = ip_address
+        ) on $left.src_endpoint.ip == $right.tor_ip
+
+  - name: "tor-user-aws-writes"
+    # Step 2: chain on cell 1. AWS CloudTrail Create/Update/Put events
+    # by the same email within the lookback window. The join is on user
+    # email so the population narrows to "Tor login by a user who ALSO
+    # has CloudTrail write activity".
+    query: |-
+      @tor-okta-logins
+      | project tor_login_time = time, actor.user.email
+      | join kind=inner (
+          @CloudTrail
+          | where event_name startswith_any ("Create", "Put", "Update", "Attach")
+          | project aws_time = time, actor.user.email, event_name, event_source
+        ) on $left.actor.user.email == $right.actor.user.email
+      | where aws_time >= tor_login_time
+      | where aws_time - tor_login_time <= 1h
+
+  - name: "trigger"
+    trigger: true
+    # Step 3: final filter on cell 2. Only fire if the user holds a
+    # privileged role at the time of the action.
+    query: |-
+      @tor-user-aws-writes
+      | where event_source in (
+          "iam.amazonaws.com",
+          "sts.amazonaws.com",
+          "kms.amazonaws.com",
+          "secretsmanager.amazonaws.com"
+        )
