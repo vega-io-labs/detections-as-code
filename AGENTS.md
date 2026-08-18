@@ -21,8 +21,11 @@ The authoritative reference is [`docs/fields.md`](docs/fields.md). Key constrain
 - State: `enabled | disabled | test_mode`.
 - `id` regex: `^[a-z0-9][a-z0-9._-]{0,127}$` (UUID v7 satisfies this).
 - `name`: 1-200 characters.
-- `lookBackSeconds`: positive integer.
-- `query` or `cells`, never both. For multi-cell, exactly one cell has `trigger: true`.
+- `frequencyCron`: an hour/minute interval (`5m`, `1h`, `1h30m`), a 5-field cron, or an `@`-macro. Seconds and days are not interval units - `30s` and `2d` are rejected. Resolved interval must be 1 minute to 31 days.
+- `lookBackSeconds`: integer, at least the `frequencyCron` interval and at most 31 days.
+- `query` or `cells`, never both. For multi-cell, exactly one cell has `trigger: true`. New detections additionally need cell names limited to letters, digits, spaces, `_` and `-`; existing ones may carry other characters.
+- Alert-volume controls are two separate mechanisms: `deduplicationFields` / `deduplicationWindowSeconds` (across runs, max window 24h) and `groupingField` / `groupingThreshold` (within one run, threshold 2-100). The threshold applies with or without a grouping field.
+- `actorFields` / `targetFields`: at most 5 normalized field names each, priority-ordered.
 - Data source selectors look like `@CloudTrail` (display name with spaces replaced by hyphens). Lookups: `@lookup_tables:<refName>/<title>`.
 
 ## What the PR-time lint catches
@@ -31,8 +34,14 @@ The authoritative reference is [`docs/fields.md`](docs/fields.md). Key constrain
 - Missing/empty required fields
 - Invalid `id` regex or `severity`/`state` enum values
 - `name` length out of `[1, 200]`
-- `lookBackSeconds <= 0`
-- Multi-cell with zero or multiple trigger cells
+- A `frequencyCron` shape or interval the scheduler will not accept
+- `lookBackSeconds` below the schedule interval or above 31 days
+- Out-of-range `deduplicationWindowSeconds`, `groupingThreshold`, or over-long `actorFields` / `targetFields`
+- Malformed `mitreTechniques` IDs
+- The removed `groupingFields` / `groupingDurationSeconds` keys
+- Multi-cell with zero or multiple trigger cells, or an empty/duplicated cell name
+
+It warns without failing on rules the API only applies to new detections, currently cell names outside `[A-Za-z0-9 _-]`. The check has no tenant access and cannot tell a create from an update.
 
 KQL is validated server-side at sync time by the `createDetections` /
 `updateDetections` mutation. Invalid KQL surfaces in the post-merge sync
@@ -55,7 +64,8 @@ requests opened from forks validate under the same rules.
 - `id` is reserved permanently in the tenant after first sync. Deleting the YAML removes the detection but does not free the id.
 - Every sync to an existing detection is recorded as a new version in the Vega UI's version-history pane.
 - Reverting a "create" PR through `git revert` removes the detection from the tenant. Reverting a "delete" PR fails: the id is already reserved.
-- The reconciler issues API calls in batches of up to 100 detections and maps the API's per-detection results back to each YAML, so a failure on one detection does not block the rest in the same batch. Whole-batch transport failures (API unreachable) are tagged with a `batch API error:` prefix in the run summary.
+- The reconciler issues API calls in batches of up to 100 detections and maps the API's per-detection results back to each YAML, so the run summary names the rule that failed. Each batch is a single transaction, though: one invalid detection rolls back every other detection in the same chunk, which the summary reports as `rolled back: ...`. Whole-batch transport failures (API unreachable) are tagged with a `batch API error:` prefix instead.
+- `groupingField` and `groupingThreshold` cannot be cleared through the API - an omitted value and an explicit null are indistinguishable to it. Removing the keys from a YAML leaves the tenant values in place; the reconciler stops tracking them rather than looping on a diff it cannot resolve.
 - No-op updates are skipped: the reconciler diffs each YAML against the current Vega state and silently drops detections already in the target shape. This avoids resetting dynamic schedules on unchanged rules and keeps the run-summary signal-to-noise ratio high.
 
 ## Local dry-run before opening a PR

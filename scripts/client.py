@@ -87,13 +87,12 @@ class VegaClient:
         scope_id: str | None = None,
     ) -> "VegaClient":
         url = f"{tenant_url.rstrip('/')}/api/v1/login_machine"
-        # Access keys created on or after 2026-06-18 must assert their key ID
-        # on every request via X-Vega-Key-Id; older keys are grandfathered.
-        headers = {"X-Vega-Key-Id": access_key_id} if access_key_id else {}
+        # The key exchange is an unauthenticated route: it takes the key alone
+        # and neither the key-id nor the scope header is read here. Both are
+        # attached to the GraphQL transport instead - see _build_client.
         response = requests.post(
             url,
             json={"access_key": access_key},
-            headers=headers,
             timeout=timeout,
         )
         if response.status_code != 200:
@@ -121,6 +120,11 @@ class VegaClient:
 
     def _build_client(self, jwt: str) -> None:
         headers = {"Jwtsessiontoken": jwt}
+        # The principal behind this JWT is the access key itself, so the
+        # gateway applies its key-id check to every call made with it: keys
+        # created on or after 2026-06-18 get HTTP 400 unless X-Vega-Key-Id
+        # carries the key's own id. Older keys are grandfathered, which is the
+        # only reason this is optional.
         if self._access_key_id:
             headers["X-Vega-Key-Id"] = self._access_key_id
         # On ABAC-enabled tenants, a key bound to more than one scope must

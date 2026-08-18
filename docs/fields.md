@@ -95,6 +95,10 @@ introduce risk.
   - `disabled` - does not run
   - `test_mode` - runs on schedule; resulting alerts are isolated from incident correlation, used to validate tuning against production data
 - **Accepted aliases:** comparison is case-insensitive; `test` and `test-mode` both resolve to `test_mode`. Prefer the canonical values above so the YAML round-trips cleanly against `git blame`.
+- **Note:** `createDetections` does not accept a state, so the sync creates
+  every detection enabled and applies `disabled` / `test_mode` in a follow-up
+  call reported as a `set_state` row. A rule first synced as `disabled` is
+  therefore enabled for the few seconds between the two calls.
 
 ```yaml
 state: "test_mode"
@@ -106,8 +110,17 @@ Schedule on which the detection runs.
 
 - **Type:** string
 - **Required:** yes
-- **Format:** Vega cron syntax. The shortest form is `Nm` / `Nh` / `Nd`.
-- **Note:** the API may normalise this value on storage (e.g. `60m` is stored as `@every 60m`).
+- **Accepted forms:**
+  - Interval shorthand: minutes and/or hours, hours first - `5m`, `1h`,
+    `1h30m`. Seconds and days are **not** interval units: write `2m` rather
+    than `120s`, and `24h` rather than `1d`.
+  - Standard 5-field cron: `*/15 * * * *`
+  - Cron macro: `@every 90m`, `@hourly`, `@daily`
+- **Constraint:** the resulting interval must be between 1 minute and 31 days
+- **Note:** interval shorthand is normalised on storage - `60m` reads back as
+  `@every 60m`. The reconciler compares the resolved interval, so `1h` and
+  `60m` are treated as the same schedule and neither produces a phantom
+  update.
 
 ```yaml
 frequencyCron: "15m"
@@ -119,10 +132,16 @@ Query lookback window, in seconds. Specifies the time range each run evaluates a
 
 - **Type:** int
 - **Required:** yes
-- **Constraint:** must be > 0
+- **Constraints:** must be **>= the `frequencyCron` interval** and <= 31 days
+  (`2678400`). A lookback shorter than the schedule would leave unexamined
+  gaps between runs, so the API rejects it.
+- **Guidance:** set it equal to the interval for a plain sliding window, or
+  larger when the query needs history (a chain cell correlating over an hour,
+  a rate check counting events across several runs).
 
 ```yaml
-lookBackSeconds: 900     # 15 minutes
+frequencyCron: "15m"
+lookBackSeconds: 900     # 15 minutes - one window per run, no gaps, no overlap
 ```
 
 ### `mitreTechniques` - optional, list of strings, default `[]`
@@ -132,8 +151,12 @@ MITRE ATT&CK technique IDs this detection covers.
 - **Type:** list of strings
 - **Required:** no
 - **Default:** `[]`
+- **Format:** `T` + four digits, optionally `.` + three digits for a
+  subtechnique (`T1078`, `T1078.004`). Tactic IDs (`TA0001`) are not accepted.
 - **Convention:** list the most specific applicable subtechnique only. Including both the parent (`T1078`) and the child (`T1078.004`) is redundant.
 - **Note:** Tactics are derived server-side from techniques. Do not list tactics in the YAML.
+- **Note:** each ID is checked against the tenant's ATT&CK catalogue at sync
+  time; an unknown technique fails the batch.
 
 ```yaml
 # Empty
@@ -199,16 +222,45 @@ references:
   - "https://example.com/internal-runbook"
 ```
 
+### Two ways to reduce alert volume
+
+Deduplication and burst protection sound alike and are configured separately:
+
+| | Deduplication | Burst protection |
+|---|---|---|
+| Fields | `deduplicationFields`, `deduplicationWindowSeconds` | `groupingField`, `groupingThreshold` |
+| Scope | Across runs, while an alert is open | Within a single run |
+| Effect | A repeat match updates the open alert instead of opening a new one | A run above the threshold collapses into grouped alerts |
+
+They compose: deduplication runs first, and burst protection then applies to
+whatever survived it.
+
+> **Removed fields.** `groupingFields` and `groupingDurationSeconds` were
+> dropped from the detection API. Neither ever affected how alerts were
+> produced, so a YAML carrying them never actually grouped anything, and the
+> sync now rejects them instead of remapping them silently.
+>
+> `groupingDurationSeconds` maps cleanly onto `deduplicationWindowSeconds` -
+> same window, new name. `groupingFields` does **not** have a single
+> successor: it was dropped as an unfinished piece of deduplication, but the
+> plural name has since been reused internally for the multi-field form of
+> burst protection. Pick by intent, not by the similar name:
+> `deduplicationFields` if you wanted repeat alerts folded into an open one,
+> `groupingField` if you wanted one noisy run split up. Either way the
+> setting starts doing something it never did before.
+
 ### `deduplicationFields` - optional, list of strings, default `[]`
 
 Result fields used to suppress duplicate alerts. New events that match an
 active alert on every listed field update that alert instead of opening a
-new one. `groupingFields` is accepted as a legacy alias.
+new one.
 
 - **Type:** list of strings
 - **Required:** no
-- **Default:** `[]`
+- **Default:** `[]` - with a window set but no fields, every matching event in
+  the window folds into one alert
 - **Format:** OCSF dotted paths, e.g. `actor.user.name`, `src_endpoint.ip`
+- **Note:** order does not matter; the fields form a set.
 
 ```yaml
 deduplicationFields: ["actor.user.name"]
@@ -220,14 +272,16 @@ deduplicationFields:
 
 ### `deduplicationWindowSeconds` - optional, int, default `0`
 
-Time window over which `deduplicationFields` is applied. `0` disables
-deduplication. `groupingDurationSeconds` is accepted as a legacy alias.
+Time window over which `deduplicationFields` is applied. Deduplication is off
+until this is set.
 
 - **Type:** int (seconds)
 - **Required:** no
-- **Default:** `0`
+- **Default:** `0` (deduplication disabled)
+- **Constraint:** 0 to `86400` (24 hours)
 
 ```yaml
+deduplicationFields: ["actor.user.name"]
 deduplicationWindowSeconds: 3600
 ```
 
@@ -241,7 +295,8 @@ detections, the source for scans and sprays.
 
 - **Type:** string (a single normalized field name)
 - **Required:** no
-- **Default:** `null` (burst grouping collapses to a single alert)
+- **Default:** `null` - over the threshold, the entire run collapses into one
+  alert
 - **Note:** validated against the tenant's normalized-field catalog at sync
   time; an unknown field fails the whole batch.
 
@@ -251,29 +306,46 @@ groupingField: "actor.user.name"
 
 ### `groupingThreshold` - optional, int, default `10`
 
-Row count in a single run that activates burst grouping. Requires
-`groupingField`.
+Row count in a single run that activates burst protection. Independent of
+`groupingField`: on its own it is the point at which a noisy run collapses
+into a single alert; with a `groupingField` it is the point at which the run
+is split by that field instead.
 
 - **Type:** int, range 2-100
 - **Required:** no
-- **Default:** `10`
+- **Default:** `10` (tenant-configurable, so omitting it and pinning it to
+  `10` are not the same thing)
 
 ```yaml
 groupingField: "src_endpoint.ip"
 groupingThreshold: 25
 ```
 
+> **Neither can be cleared through the API.** An omitted `groupingField` /
+> `groupingThreshold` is indistinguishable from an explicit null, and the API
+> reads both as "leave unchanged". Deleting the keys from a YAML therefore
+> leaves the previous values in place; the reconciler stops tracking them
+> rather than reporting a diff it can never resolve. Clear them in the Vega
+> UI, or set an explicit new value.
+
 ### `actorFields` / `targetFields` - optional, list of strings, default `[]`
 
 Priority-ordered field names used to extract the alert's Actor and Target
-entities, highest priority first. Each entry is a normalized field name, a
-raw event field prefixed with `_raw.`, or a query projection alias. Empty
-falls back to Vega's per-data-type defaults.
+entities, highest priority first: the first field with a value in the result
+row wins. Empty falls back to Vega's per-data-type defaults.
+
+- **Type:** list of strings
+- **Required:** no
+- **Default:** `[]`
+- **Constraints:** at most 5 entries each; every entry must be a normalized
+  field available in your tenant, validated at sync time
+- **Note:** order is meaningful - reordering the list is a real change and
+  produces a new detection version.
 
 ```yaml
 actorFields:
   - "actor.user.name"
-  - "_raw.userIdentity.arn"
+  - "actor.process.user.name"
 targetFields:
   - "device.hostname"
 ```
@@ -299,8 +371,9 @@ query: |-
 A list of named query fragments with exactly one designated as the trigger. The trigger cell unions or joins the others using `@CellName` references. Cells may also reference each other (chained composition), not only the trigger.
 
 - **Type:** list of `{name, query, trigger?}`
-- **Constraints:** at least one cell, exactly one with `trigger: true`, names unique and must not start with `@`.
+- **Constraints:** at least one cell, exactly one with `trigger: true`, names unique and non-empty. A **new** detection additionally has its cell names restricted to letters, digits, spaces, `_` and `-` by the create API; the update path does not re-check, so detections that predate the rule keep other characters and stay manageable here. The PR check flags the difference as a warning rather than an error, because it cannot tell a create from an update without tenant access.
 - **Alias:** `detectionCells:` is accepted as a synonym for `cells:` for compatibility with YAMLs copied from internal Vega repositories.
+- **Note:** write cell references as `@CellName`. Vega rewrites them into a canonical `@cells:<ref>/CellName` form on save, so the UI and the API show the longer version - that is the same reference, and the reconciler compares the two as equal rather than rewriting your detection on every sync.
 
 See the four annotated patterns in `docs/`:
 
@@ -344,9 +417,14 @@ that reference data sources that are not connected.
 | `mitreTactics` | Derived server-side from `mitreTechniques`. |
 | `dataSourcesIds` | Derived from the table selector in the KQL itself (e.g. `@CloudTrail`). |
 | `tags` | Managed in the Vega UI. |
-| `groupingField` (singular) / `groupingThreshold` | Event-grouping feature; not in v1. |
 
 ## What the PR-time lint actually checks
+
+Everything below mirrors a rule the API enforces on **both** the create and
+the update path. Catching it in the PR matters because a sync batch is
+transactional: one rejected detection rolls back every other detection sent in
+the same call. Rules that only bind on create are reported as warnings, since
+the check runs without tenant access and cannot tell which a YAML will become.
 
 | Check | Mechanism | Failure mode |
 |---|---|---|
@@ -356,16 +434,27 @@ that reference data sources that are not connected.
 | `name` length 1-200 | translator | PR red |
 | `severity` is `1-4` or `LOW/MEDIUM/HIGH/CRITICAL` | translator | PR red |
 | `state` is `enabled/disabled/test_mode` (also accepts `test` / `test-mode` aliases) | translator | PR red |
-| `lookBackSeconds > 0` | translator | PR red |
+| `frequencyCron` is a recognised shape and resolves to 1m-31d | translator | PR red, accepted forms listed |
+| `lookBackSeconds` >= the `frequencyCron` interval and <= 31 days | translator | PR red |
+| `deduplicationWindowSeconds` within 0-86400 | translator | PR red |
+| `groupingThreshold` within 2-100 | translator | PR red |
+| `actorFields` / `targetFields` at most 5 non-empty entries each | translator | PR red |
+| `mitreTechniques` entries look like `T1078` / `T1078.004` | translator | PR red |
+| Removed fields (`groupingFields`, `groupingDurationSeconds`) are not used | translator | PR red, replacement named |
 | Exactly one of `query` / `cells` is present (not both, not neither) | translator | PR red |
-| Multi-cell with exactly one trigger cell, names unique and not starting with `@` | translator | PR red |
+| Multi-cell with exactly one trigger cell, names unique and non-empty | translator | PR red |
+| Cell names outside `[A-Za-z0-9 _-]` | translator | PR yellow - warning only, fatal only if the detection is new |
 
 ## Validated at sync time (post-merge)
+
+Anything that needs tenant state cannot be checked in a PR (the validate
+workflow runs without a tenant secret, so it also passes on fork PRs).
 
 | Field / behaviour | Where it would fail |
 |---|---|
 | KQL parses | `createDetections` rejects with parser error in the sync run's step summary |
 | KQL references data sources / lookups that exist in your tenant | `createDetections` rejects with `table selectors not found: @X` |
-| `frequencyCron` format | `createDetections` rejects unparseable cron |
-| `mitreTechniques` validity (must be real T-codes) | `createDetections` rejects fake technique IDs |
+| Cron expressions and macros that need a full cron parser (`*/15 * * * *`, `@daily`) | `createDetections` rejects an unparseable expression |
+| `mitreTechniques` exist in the ATT&CK catalogue | `createDetections` rejects unknown technique IDs |
+| `groupingField`, `actorFields`, `targetFields` are normalized fields in your tenant | `createDetections` rejects with `... is not a valid normalized field` |
 | KQL semantic correctness (does it match the right events?) | Runtime (you'll see it in detection hits or lack of them) |

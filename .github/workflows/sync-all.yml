@@ -35,15 +35,22 @@ jobs:
     steps:
       - uses: actions/checkout@v5
 
-      - name: Verify VEGA_ACCESS_KEY is set
+      - name: Verify Vega credentials are set
         env:
           VEGA_ACCESS_KEY: ${{ secrets.VEGA_ACCESS_KEY }}
+          VEGA_ACCESS_KEY_ID: ${{ secrets.VEGA_ACCESS_KEY_ID }}
         run: |
           if [ -z "$VEGA_ACCESS_KEY" ]; then
             echo "::error::VEGA_ACCESS_KEY repository secret is not set."
             echo "::error::Configure it under Settings -> Secrets and variables -> Actions."
             echo "::error::See README 'First-time setup' for instructions."
             exit 1
+          fi
+          # Only keys created before 2026-06-18 are exempt from the key-id
+          # header, so a missing id is usually a misconfiguration - but it is
+          # legitimate for an older key, hence a warning rather than a failure.
+          if [ -z "$VEGA_ACCESS_KEY_ID" ]; then
+            echo "::warning::VEGA_ACCESS_KEY_ID is not set. Keys created on or after 2026-06-18 need it; without it the API rejects every call with 'X-Vega-Key-Id header is required'."
           fi
 
       - uses: actions/setup-python@v6

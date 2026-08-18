@@ -29,7 +29,7 @@ import yaml
 from rich.console import Console
 from rich.table import Table
 
-from .translator import yaml_to_create_input
+from .translator import create_only_warnings, yaml_to_create_input
 
 console = Console()
 
@@ -43,6 +43,10 @@ class FileCheck:
     schema_error: str | None = None
     detection_id: str | None = None
     detection_name: str | None = None
+    # Rules that only bind when the detection is new. Surfaced, never fatal:
+    # the check runs without tenant access and cannot tell a create from an
+    # update.
+    warnings: list[str] = field(default_factory=list)
 
 
 @dataclass
@@ -52,6 +56,10 @@ class Report:
     @property
     def all_ok(self) -> bool:
         return all(c.schema_ok for c in self.checks)
+
+    @property
+    def warned(self) -> list[FileCheck]:
+        return [c for c in self.checks if c.warnings]
 
 
 def changed_yaml_paths(
@@ -99,6 +107,7 @@ def schema_check(file_path: Path) -> FileCheck:
     try:
         yaml_to_create_input(doc)
         check.schema_ok = True
+        check.warnings = create_only_warnings(doc)
     except (ValueError, KeyError) as e:
         check.schema_error = str(e)
     return check
@@ -139,9 +148,12 @@ def _result_table(report: Report, deleted: list[str]) -> Table:
     t.add_column("File")
     t.add_column("Detail")
     for c in report.checks:
-        ok = "[green]✓[/]" if c.schema_ok else "[red]✗[/]"
-        detail = (c.schema_error or "") if not c.schema_ok else ""
-        t.add_row(ok, c.path, detail)
+        if not c.schema_ok:
+            t.add_row("[red]✗[/]", c.path, c.schema_error or "")
+        elif c.warnings:
+            t.add_row("[yellow]![/]", c.path, "; ".join(c.warnings))
+        else:
+            t.add_row("[green]✓[/]", c.path, "")
     for d in deleted:
         t.add_row("[yellow]-[/]", d, "will be deleted on merge")
     return t
@@ -153,6 +165,7 @@ def _print_report(report: Report, deleted: list[str]) -> None:
     console.print(
         f"[{style}]files={len(report.checks)} "
         f"schema_fail={len(schema_fails)} "
+        f"warnings={len(report.warned)} "
         f"deleted={len(deleted)}[/]"
     )
     console.print(_result_table(report, deleted))
@@ -174,6 +187,12 @@ def _write_step_summary(report: Report, deleted: list[str]) -> None:
     schema_fails = [c for c in report.checks if not c.schema_ok]
     if not report.checks:
         header = "## ✅ No detection YAMLs changed"
+    elif report.all_ok and report.warned:
+        header = (
+            f"## ⚠️ Detection schema validation passed with "
+            f"{len(report.warned)} warning(s) "
+            f"({len(report.checks)} file(s), {len(deleted)} deleted)"
+        )
     elif report.all_ok:
         header = (
             f"## ✅ Detection schema validation passed "

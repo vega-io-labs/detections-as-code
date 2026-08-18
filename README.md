@@ -6,9 +6,9 @@ Detection-as-Code (DaC) moves the authoring surface for tenant-custom detections
 
 ## Capabilities
 
-- **PR validation.** Every pull request runs schema lint against the changed YAMLs (required fields, severity values, state values, regex on `id`, multi-cell constraints). Schema failures block the check before merge.
+- **PR validation.** Every pull request runs schema lint against the changed YAMLs (required fields, severity values, state values, regex on `id`, schedule and lookback bounds, multi-cell constraints). Schema failures block the check before merge.
 - **Reconciling sync on merge.** On merge to `main`, the sync engine diffs every YAML against the current tenant state and submits only the deltas. Unmodified detections are skipped so dynamic schedules are not reset.
-- **Per-detection result reporting.** The reconciler batches API calls in chunks of up to 100 detections and maps each per-detection result back to its YAML. A failure on one detection does not block the rest in the same batch.
+- **Per-detection result reporting.** The reconciler batches API calls in chunks of up to 100 detections and maps each per-detection result back to its YAML, so the run summary names the rule that failed. Each batch is one transaction: an invalid detection rolls back the others in the same chunk, and they are reported as blocked rather than applied. This is what the PR check exists to prevent.
 - **Auditable run summary.** Every sync writes a pass/fail table to the GitHub Actions step summary, with API errors quoted verbatim. Whole-batch failures (API unreachable, tenant outage) are tagged with a `batch API error:` prefix so they read as infrastructure issues rather than detection-level failures.
 - **Two sync workflows.** An automatic sync runs on push to `main`. A manual `Sync ALL detections` workflow supports bulk deployment for initial onboarding or recovery from drift.
 
@@ -26,7 +26,7 @@ Before adopting Detection-as-Code, ensure the following are in place:
 2. Add your Vega access key as a repository secret:
    - GitHub: repo Settings → Secrets and variables → Actions
    - New repository secret: `VEGA_ACCESS_KEY`, paste the key
-   - Second repository secret: `VEGA_ACCESS_KEY_ID`, paste the key's ID (shown next to the key in the Vega UI). Access keys created on or after 2026-06-18 must send their ID on every request; keys created before that date work without it, so the secret is optional for older keys.
+   - Second repository secret: `VEGA_ACCESS_KEY_ID`, paste the key's ID (shown next to the key in the Vega UI). Every API call must carry the ID of the key it authenticates with, so any key created on or after 2026-06-18 needs this secret - in practice, any key you create today. Only keys predating that date are grandfathered and work without it.
 
 3. (Optional) Protect the `main` branch:
    - GitHub: Settings → Branches → Add rule for `main`
@@ -80,8 +80,8 @@ One detection per file. The filename is for human readability; the `id` field in
 | `name` | string | 1-200 characters. |
 | `severity` | int (1-4) or enum string | `1=LOW, 2=MEDIUM, 3=HIGH, 4=CRITICAL`. |
 | `state` | string | `enabled`, `disabled`, or `test_mode`. |
-| `frequencyCron` | string | Non-empty. Schedule on which the detection runs (e.g. `"5m"`, `"1h"`). |
-| `lookBackSeconds` | int (>0) | Query lookback window, in seconds. |
+| `frequencyCron` | string | Schedule on which the detection runs: an hour/minute interval (`"5m"`, `"1h"`, `"1h30m"`), a 5-field cron, or an `@`-macro. Resolved interval must be 1 minute to 31 days. |
+| `lookBackSeconds` | int | Query lookback window, in seconds. Must be **>= the `frequencyCron` interval** (a shorter one would skip data between runs) and <= 31 days. |
 | `query` **OR** `cells` | string / list | KQL. Use `query` for the single-cell case; use `cells` for multi-step correlations. Exactly one of the two must be present. See [`docs/fields.md`](docs/fields.md#query-or-cells--required-exactly-one-of-them) and the four annotated patterns in [`docs/`](#example-catalogue). |
 
 Operational fields (`state`, `frequencyCron`, `lookBackSeconds`) are required by design: silent defaults on security infrastructure introduce risk. Each value must be specified explicitly.
@@ -94,12 +94,14 @@ Operational fields (`state`, `frequencyCron`, `lookBackSeconds`) are required by
 | `attackScenario` | string | `""` | Human-readable description of the adversary behaviour. |
 | `mitreTechniques` | list[string] | `[]` | MITRE technique IDs, e.g. `["T1078", "T1078.004"]`. Tactics are derived server-side. |
 | `references` | list[string] | `[]` | URLs related to the detection. |
-| `deduplicationFields` | list[string] | `[]` | OCSF dotted paths used to suppress duplicate alerts: new events matching an active alert on every listed field update that alert instead of opening a new one. Legacy alias: `groupingFields`. |
-| `deduplicationWindowSeconds` | int | `0` | Deduplication window in seconds. `0` disables deduplication. Legacy alias: `groupingDurationSeconds`. |
-| `groupingField` | string | `null` | Burst protection: when one run returns more than `groupingThreshold` rows, results are grouped into one alert per distinct value of this normalized field. |
-| `groupingThreshold` | int | `10` | Row count that activates burst grouping. Range 2-100. Requires `groupingField`. |
-| `actorFields` | list[string] | `[]` | Priority-ordered field names used to extract the alert's Actor. Empty uses Vega's per-data-type defaults. |
-| `targetFields` | list[string] | `[]` | Priority-ordered field names used to extract the alert's Target. Empty uses Vega's per-data-type defaults. |
+| `deduplicationFields` | list[string] | `[]` | OCSF dotted paths used to suppress duplicate alerts: new events matching an active alert on every listed field update that alert instead of opening a new one. |
+| `deduplicationWindowSeconds` | int | `0` | Deduplication window in seconds, max `86400`. `0` disables deduplication. |
+| `groupingField` | string | `null` | Burst protection: when one run returns more than `groupingThreshold` rows, results are grouped into one alert per distinct value of this normalized field. Default `null` collapses such a run into a single alert. |
+| `groupingThreshold` | int | `10` | Row count in one run that activates burst protection. Range 2-100. Applies with or without `groupingField`. |
+| `actorFields` | list[string] | `[]` | Priority-ordered normalized field names used to extract the alert's Actor, max 5. Empty uses Vega's per-data-type defaults. |
+| `targetFields` | list[string] | `[]` | Priority-ordered normalized field names used to extract the alert's Target, max 5. Empty uses Vega's per-data-type defaults. |
+
+`groupingFields` and `groupingDurationSeconds` were removed from the detection API and are rejected by the sync rather than remapped. `groupingDurationSeconds` becomes `deduplicationWindowSeconds`; `groupingFields` has no single successor and resolves to either `deduplicationFields` or `groupingField` depending on what you meant. See [`docs/fields.md`](docs/fields.md#two-ways-to-reduce-alert-volume).
 
 ### YAML list conventions
 
@@ -240,6 +242,7 @@ Below it is a per-detection table with one row per action (create / update / del
 - `no_op` counts detections whose YAML matched the current Vega state exactly - skipped to avoid resetting dynamic schedules.
 - The Error column shows per-detection validation errors verbatim from the API.
 - A whole-batch transport failure surfaces as up to 100 rows with the same `batch API error: ...` text; that indicates a tenant or network issue, not a detection-level failure.
+- A `rolled back: ...` error means that detection was valid but was not written, because another detection in the same 100-item chunk failed validation and the API applies each chunk as one transaction. Fix the named offender and re-run; nothing partial was left behind.
 
 ## Local dry-run
 
@@ -249,7 +252,7 @@ Before opening a pull request, reconcile against your tenant locally to preview 
 pip install -r requirements.txt
 
 export VEGA_ACCESS_KEY="..."                     # or pass --access-key
-export VEGA_ACCESS_KEY_ID="..."                  # or pass --access-key-id; required for keys created on or after 2026-06-18
+export VEGA_ACCESS_KEY_ID="..."                  # or pass --access-key-id; the key's own id, required for keys created on or after 2026-06-18
 
 # Print the plan without applying it
 python -m scripts.sync \
@@ -304,7 +307,10 @@ Inside Vega, each merged change appears as a row in the detection's version-hist
 | Validate fails with `'name' must be 1-200 characters` | name is empty or too long. | Trim. |
 | Validate fails with `invalid severity` / `invalid state` | severity is outside `1-4` / not in `LOW/MEDIUM/HIGH/CRITICAL`; state is not one of `enabled/disabled/test_mode`. | Use one of the listed values. |
 | Validate fails with `exactly one cell must have 'trigger: true'` | Multi-cell YAML has zero or multiple trigger cells. | Mark exactly one cell `trigger: true`. |
-| Validate fails with `cells[i].name ... is duplicated` or `must not start with '@'` | Cell name collision or `@`-prefixed name. | Make cell names unique within the detection and don't prefix them with `@`. |
+| Validate fails with `cells[i].name ... is duplicated` | Two cells in one detection share a name. | Make cell names unique within the detection. |
+| Validate warns `cells[i].name ... contains characters the API rejects when creating a detection` | Punctuation such as `.` in a cell name. | Harmless for a detection that already exists; rename before merging if it is new, or the create fails and rolls back its batch. |
+| Validate fails with `'groupingFields' is no longer accepted by the detection API` | The YAML predates the removal of the plural grouping fields. | Choose by intent - `deduplicationFields` to fold repeat alerts together across runs, `groupingField` to split one noisy run. `groupingDurationSeconds` becomes `deduplicationWindowSeconds`. The old keys never took effect, so review the value before carrying it over. |
+| Validate fails with `'lookBackSeconds' must be >= the Ns 'frequencyCron' interval` | The lookback window is shorter than the schedule, which would skip data between runs. | Raise `lookBackSeconds` to at least the interval, or shorten `frequencyCron`. |
 
 ### Sync at merge time
 
@@ -313,10 +319,12 @@ Inside Vega, each merged change appears as a row in the detection's version-hist
 | Sync fails with `table selectors not found: @X` | Your tenant does not have a connector configured for that data source. | Onboard the connector in the Vega UI before merging, or remove the detection. |
 | Sync fails with `parse pipeline query language` | KQL syntax error. The line and column are shown in the workflow log. | Fix the KQL in a follow-up PR. |
 | Sync fails with `external_id "..." already exists` | That id was previously used. | Generate a new UUID; old ids remain reserved permanently. |
-| Sync exits non-zero but most detections succeeded | Per-detection result mapping: a subset has validation errors. | Review the workflow step summary to identify the failing detections and address each individually. |
+| Sync exits non-zero and a chunk reports `rolled back: ...` | One detection in that chunk failed validation, and the chunk is applied as a single transaction. | Fix the detections whose rows carry a real API error; the rolled-back ones need no change and land on the next run. |
 | Sync fails with `login_machine failed: 500 ... INTERNAL_SERVER_ERROR` | The access key is inactive - deactivated or past its expiry date. | Create a new access key in the Vega UI and update the `VEGA_ACCESS_KEY` and `VEGA_ACCESS_KEY_ID` secrets. |
-| Sync fails with `X-Vega-Key-Id header is required` | The key was created on or after 2026-06-18 and the `VEGA_ACCESS_KEY_ID` secret is not set. | Add the `VEGA_ACCESS_KEY_ID` repository secret with the key's ID. |
+| Authentication succeeds, then every API call fails with HTTP 400 `X-Vega-Key-Id header is required` | The key was created on or after 2026-06-18 and `VEGA_ACCESS_KEY_ID` is unset or holds the wrong id. The key exchange itself is unauthenticated, which is why it gets that far. | Set the `VEGA_ACCESS_KEY_ID` repository secret to that key's own id, as shown next to it in the Vega UI. |
 | Login succeeds but every query fails with 403 `NO_SCOPE_FOR_ACCESS_KEY` or `SCOPE_SELECTION_REQUIRED` | The tenant has scopes (ABAC) enabled and the access key has zero or multiple scope bindings. | Bind the key to exactly one scope, or set the `VEGA_SCOPE_ID` repository variable to the scope UUID the sync should use. |
+| Every query fails with 403 `SCOPE_SELECTION_REQUIRED` — `Invalid X-Vega-Scope header value` | `VEGA_SCOPE_ID` is set but is not a UUID. | Copy the scope's UUID exactly; a name or a truncated id is rejected before any permission check. |
+| Every query fails with 403 `ACCESS_DENIED` right after setting `VEGA_SCOPE_ID` | The UUID is well-formed but the access key has no binding to that scope. | Point `VEGA_SCOPE_ID` at a scope the key is actually bound to, or add the binding to the key. |
 | A chunk of detections all fail with the same `batch API error: ...` line | The API was unreachable or returned a transport error for that batch. | Re-run the workflow. Transient transport errors clear on retry; the next run is idempotent (no-op updates are skipped). |
 | Sync reports failures stating the detection already exists, yet the rule is visible in the UI | The first attempt landed on Vega but the response was lost in transit; the retry encountered a duplicate. | The detection is healthy. Re-run the workflow; the next pass records it as a no-op. |
 

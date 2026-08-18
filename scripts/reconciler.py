@@ -5,13 +5,15 @@ Each run, regardless of what changed in git:
 2. Fetch every detection from Vega.
 3. Classify by externalId: create / update / delete.
 4. Skip no-op updates by comparing the desired payload to the current Vega state.
-5. Apply creates and updates in chunks of BATCH_SIZE; the API returns a
-   per-detection `results` array so we still report success/failure per rule.
+5. Apply creates and updates in chunks of BATCH_SIZE. Each call is one
+   transaction: the API returns a per-detection `results` array that names the
+   offending rules, but a single invalid detection rolls the whole chunk back.
    Deletes are single-shot (the API has no bulk delete).
 """
 
 from __future__ import annotations
 
+import re
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Callable, Iterable, Literal
@@ -20,7 +22,12 @@ import yaml
 
 from .client import VegaAPIError, VegaClient
 from .consts import DetectionState
-from .translator import yaml_state, yaml_to_create_input, yaml_to_update_input
+from .translator import (
+    frequency_interval_seconds,
+    yaml_state,
+    yaml_to_create_input,
+    yaml_to_update_input,
+)
 from .utils import chunks
 
 ActionKind = Literal["create", "update", "delete", "set_state"]
@@ -112,7 +119,6 @@ _UPDATE_DIFF_FIELDS = (
     "attackScenario",
     "references",
     "deduplicationFields",
-    "groupingField",
 )
 
 # actorFields/targetFields are priority-ordered, so reordering is a real change
@@ -122,21 +128,47 @@ _UPDATE_DIFF_ORDERED_FIELDS = (
     "targetFields",
 )
 
+# Neither can be cleared through the API: an omitted value and an explicit null
+# are indistinguishable to the server, so it reads both as "leave unchanged".
+# They are therefore only compared when the YAML actually sets them - otherwise
+# a detection that once had a grouping field would report a diff on every run
+# and never converge.
+_UPDATE_DIFF_UNCLEARABLE_FIELDS = (
+    "groupingField",
+    "groupingThreshold",
+)
+
 
 def _frequency_equal(yaml_value: str, vega_value: str | None) -> bool:
-    # Vega normalises fixed intervals server-side (`60m` can read back as
-    # `@every 60m` or `FIXED_INTERVAL 60m`). Compare loosely, else every run
-    # sees a phantom diff and pushes a new detection version.
+    # A fixed interval is stored as `@every <expr>`, so `60m` reads back as
+    # `@every 60m`. Compare the resolved interval where possible so `1h` and
+    # `60m` also count as equal; fall back to the literal text for cron
+    # expressions, which are stored verbatim. Otherwise every run sees a
+    # phantom diff and pushes a new detection version.
     if vega_value is None:
         return False
 
-    def _norm(value: str) -> str:
-        v = (value or "").strip().lower()
-        for prefix in ("@every ", "fixed_interval "):
-            v = v.removeprefix(prefix)
-        return v
+    yaml_interval = frequency_interval_seconds(yaml_value)
+    if yaml_interval is not None:
+        vega_interval = frequency_interval_seconds(vega_value)
+        if vega_interval is not None:
+            return yaml_interval == vega_interval
 
-    return _norm(yaml_value) == _norm(vega_value)
+    return (yaml_value or "").strip() == (vega_value or "").strip()
+
+
+# A cell reference is stored in canonical form: the `@other-cell` a human
+# writes comes back as `@cells:<ref>/other-cell`, where <ref> is assigned by
+# the server. Comparing the raw text would therefore report a diff on every
+# multi-cell detection forever, so both sides are reduced to the bare name
+# first. Cell names are unique within a detection, which is what makes the
+# short form unambiguous. Data-source selectors are left alone: the API
+# stores those exactly as written.
+_CELL_REFERENCE_RE = re.compile(r"@cells:[A-Za-z0-9_-]+/")
+
+
+def _normalise_cell_query(query: str | None) -> str:
+    return _CELL_REFERENCE_RE.sub("@", (query or "").strip())
 
 
 def _cells_equal(yaml_cells: list, vega_cells: list | None) -> bool:
@@ -149,7 +181,9 @@ def _cells_equal(yaml_cells: list, vega_cells: list | None) -> bool:
     for a, b in zip(yk, vk):
         if a.get("name") != b.get("name"):
             return False
-        if (a.get("query") or "").strip() != (b.get("query") or "").strip():
+        if _normalise_cell_query(a.get("query")) != _normalise_cell_query(
+            b.get("query")
+        ):
             return False
         if bool(a.get("trigger")) != bool(b.get("trigger")):
             return False
@@ -174,12 +208,9 @@ def _is_no_op_update(
         vega_state.get("deduplicationWindowSeconds") or 0
     ):
         return False
-    # groupingThreshold only matters while a groupingField is set; without one
-    # Vega still reports its default threshold, which is not a real diff.
-    if payload.get("groupingField") is not None and payload.get(
-        "groupingThreshold"
-    ) != vega_state.get("groupingThreshold"):
-        return False
+    for f in _UPDATE_DIFF_UNCLEARABLE_FIELDS:
+        if f in payload and payload[f] != vega_state.get(f):
+            return False
     if not _frequency_equal(
         payload.get("frequencyCron", ""), vega_state.get("frequencyCron")
     ):
@@ -245,18 +276,55 @@ def _apply_batched(
                     ActionResult(kind, p["externalId"], p["name"], False, err)
                 )
             continue
-        # updateDetections returns results with an empty `name`, so results
-        # can only be matched back to the request by position. The API keeps
-        # request order; fall back to name matching if the counts diverge.
+        # The API returns one result per requested detection, in request order.
+        # Match by position rather than by name: names are not unique across a
+        # batch, and an update result echoes back only the name that was sent.
+        # Fall back to name matching only if the counts somehow diverge.
         results = response.get("results", [])
         if len(results) == len(batch):
             matched = list(zip(batch, results))
         else:
             by_name = {r.get("name"): r for r in results}
             matched = [(p, by_name.get(p["name"])) for p in batch]
+
+        # Each call is a single transaction: unless the whole batch validates,
+        # nothing is written. Reporting the valid entries as applied would be a
+        # lie, so a rolled-back batch marks them as blocked and points at the
+        # detections that caused it. `committed` is non-nullable in the schema,
+        # so treat its absence as "assume nothing landed" and say so - a
+        # spurious re-run is cheap and idempotent, silent data loss is not.
+        summary = response.get("summary") or {}
+        committed = bool(summary.get("committed"))
+        rejected = [
+            p["externalId"]
+            for p, res in matched
+            if not (res and res.get("status") == "VALID")
+        ]
+        if "committed" not in summary:
+            rollback_note = (
+                "outcome unknown: the API response carried no commit status, "
+                "so this detection may or may not have been written. Re-run "
+                "the sync to confirm"
+            )
+        else:
+            rollback_note = (
+                f"rolled back: not applied because {len(rejected)} other "
+                f"detection(s) in the same batch failed validation "
+                f"({', '.join(rejected[:5])}"
+                f"{', ...' if len(rejected) > 5 else ''})"
+            )
+
         for p, res in matched:
             if res and res.get("status") == "VALID":
-                report.add(ActionResult(kind, p["externalId"], p["name"], True))
+                report.add(
+                    ActionResult(
+                        kind,
+                        p["externalId"],
+                        p["name"],
+                        committed,
+                        None if committed else rollback_note,
+                    )
+                )
             else:
                 err = (
                     _format_errors(res.get("errors") or [])

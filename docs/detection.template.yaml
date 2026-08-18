@@ -10,12 +10,12 @@
 
 # ----- REQUIRED -----
 
-id: "REPLACE-WITH-A-UUID-V7"                    # uuidgen -7 / python -c "import uuid; print(uuid.uuid7())"
-name: "REPLACE WITH A SHORT, SPECIFIC NAME"     # 1-200 characters
+id: "REPLACE-WITH-A-UUID-V7"                     # uuidgen -7 / python -c "import uuid; print(uuid.uuid7())"
+name: "REPLACE WITH A SHORT, SPECIFIC NAME"      # 1-200 characters
 severity: 3                                      # 1=LOW, 2=MEDIUM, 3=HIGH, 4=CRITICAL
 state: "enabled"                                 # enabled | disabled | test_mode
-frequencyCron: "5m"                              # schedule the detection runs on
-lookBackSeconds: 300                             # query lookback window, in seconds; must be > 0
+frequencyCron: "5m"                              # hours/minutes ("5m", "1h", "1h30m"), a 5-field cron, or an @-macro; 1m to 31d
+lookBackSeconds: 300                             # query lookback window, in seconds; must be >= the frequencyCron interval
 query: |-
   @CloudTrail
   | where event_name =~ "ConsoleLogin"
@@ -34,5 +34,19 @@ attackScenario: "An adversary <does what> to <achieve what goal>. Two-to-four se
 mitreTechniques: []                              # e.g. ["T1078.004"]; list the most specific applicable subtechnique only. Tactics are derived server-side.
 references: []                                   # e.g. ["https://attack.mitre.org/techniques/T1078/004/"]
 
-deduplicationFields: []                               # e.g. ["actor.user.name"]
-deduplicationWindowSeconds: null                    # int in seconds, or null
+# Deduplication: while an alert is open, a new event matching it on every
+# listed field updates that alert instead of opening another one.
+deduplicationFields: []                          # e.g. ["actor.user.name"]
+deduplicationWindowSeconds: 0                    # 0 disables deduplication; max 86400 (24h)
+
+# Burst protection: caps the alerts a single noisy run can produce. Above the
+# threshold, results collapse into one alert per distinct groupingField value,
+# or into one alert overall when no groupingField is set. Uncomment to use -
+# neither can be cleared again through the API (see docs/fields.md).
+# groupingField: "actor.user.name"               # a normalized field name, validated against your tenant
+# groupingThreshold: 10                          # rows in one run that activate grouping; 2-100
+
+# Entity extraction: which fields become the alert's Actor and Target,
+# highest priority first. Leave empty to use Vega's per-data-type defaults.
+actorFields: []                                  # normalized field names, at most 5
+targetFields: []                                 # normalized field names, at most 5
