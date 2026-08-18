@@ -26,9 +26,9 @@ attackScenario: "An adversary with stolen AWS root credentials (recovered from a
 references:
   - "https://docs.aws.amazon.com/IAM/latest/UserGuide/root-user-best-practices.html"
   - "https://attack.mitre.org/techniques/T1078/004/"
-groupingFields:
+deduplicationFields:
   - "actor.user.name"
-groupingDurationSeconds: 900                  # 15 minutes
+deduplicationWindowSeconds: 900                  # 15 minutes
 
 query: |-
   @CloudTrail

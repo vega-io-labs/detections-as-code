@@ -11,6 +11,10 @@ Omitted fields:
   mitreTactics    : derived server-side from mitreTechniques.
   dataSourcesIds  : derived from the KQL table selector.
   tags            : UI-managed.
+
+Legacy aliases:
+  groupingFields          -> deduplicationFields (product renamed the concept).
+  groupingDurationSeconds -> deduplicationWindowSeconds.
 """
 
 from __future__ import annotations
@@ -31,6 +35,8 @@ from .consts import (
 _EXTERNAL_ID_RE = re.compile(r"^[a-z0-9][a-z0-9._-]{0,127}$")
 _CELL_NAME_RE = re.compile(r"^[^@].*$")  # must not start with '@'
 _NAME_MAX_LEN = 200
+# Fixed-interval shorthand (5m, 1h, 30s, 2d), optionally multi-unit (1h30m).
+_FIXED_INTERVAL_RE = re.compile(r"^(\d+[smhd])+$", re.IGNORECASE)
 
 
 def _severity_to_enum(value: Any) -> str:
@@ -69,6 +75,42 @@ def _resolve_cells_field(detection: dict[str, Any]) -> list | None:
         if (value := detection.get(key)) and isinstance(value, list):
             return value
     return None
+
+
+def _resolve_aliased(
+    detection: dict[str, Any], current: str, legacy: str
+) -> Any:
+    if current in detection and legacy in detection:
+        raise ValueError(
+            f"{detection.get('id', '<no id>')}: provide either "
+            f"'{current}' or legacy '{legacy}', not both"
+        )
+    if current in detection:
+        return detection[current]
+    return detection.get(legacy)
+
+
+def _validate_grouping(detection: dict[str, Any], ext_id: str) -> None:
+    grouping_field = detection.get("groupingField")
+    if grouping_field is not None and (
+        not isinstance(grouping_field, str) or not grouping_field.strip()
+    ):
+        raise ValueError(
+            f"{ext_id}: 'groupingField' must be a non-empty string "
+            f"(a normalized field name)"
+        )
+    threshold = detection.get("groupingThreshold")
+    if threshold is not None and (
+        not isinstance(threshold, int) or not 2 <= threshold <= 100
+    ):
+        raise ValueError(
+            f"{ext_id}: 'groupingThreshold' must be an integer between "
+            f"2 and 100 (got {threshold!r})"
+        )
+    if threshold is not None and grouping_field is None:
+        raise ValueError(
+            f"{ext_id}: 'groupingThreshold' requires 'groupingField'"
+        )
 
 
 def _require_nonempty_string(detection: dict[str, Any], field: str) -> str:
@@ -173,7 +215,19 @@ def yaml_to_create_input(detection: dict[str, Any]) -> dict[str, Any]:
         )
 
     cells = _build_cells(detection, ext_id)
-    frequency = _require_nonempty_string(detection, "frequencyCron")
+    frequency = _require_nonempty_string(detection, "frequencyCron").strip()
+    # The API rejects an unparseable frequency on update with a bare 500, so
+    # catch the obvious shapes here: fixed interval, 5-field cron, or @-macro.
+    if not (
+        _FIXED_INTERVAL_RE.match(frequency)
+        or frequency.startswith("@")
+        or len(frequency.split()) == 5
+    ):
+        raise ValueError(
+            f"{ext_id}: 'frequencyCron' must be a fixed interval (e.g. '5m', "
+            f"'1h'), a 5-field cron expression, or an @-macro "
+            f"(got {frequency!r})"
+        )
 
     lookback_raw = detection["lookBackSeconds"]
     if not isinstance(lookback_raw, int) or lookback_raw <= 0:
@@ -182,7 +236,9 @@ def yaml_to_create_input(detection: dict[str, Any]) -> dict[str, Any]:
             f"(got {lookback_raw!r})"
         )
 
-    return {
+    _validate_grouping(detection, ext_id)
+
+    payload = {
         "externalId": ext_id,
         "name": name,
         "severity": _severity_to_enum(detection["severity"]),
@@ -193,10 +249,21 @@ def yaml_to_create_input(detection: dict[str, Any]) -> dict[str, Any]:
         "logicDescription": detection.get("logicDescription") or "",
         "attackScenario": detection.get("attackScenario") or "",
         "references": _ensure_list(detection.get("references")),
-        "groupingFields": _ensure_list(detection.get("groupingFields")),
-        "groupingDurationSeconds": detection.get("groupingDurationSeconds"),
+        "deduplicationFields": _ensure_list(
+            _resolve_aliased(detection, "deduplicationFields", "groupingFields")
+        ),
+        "deduplicationWindowSeconds": _resolve_aliased(
+            detection, "deduplicationWindowSeconds", "groupingDurationSeconds"
+        )
+        or 0,
+        "actorFields": _ensure_list(detection.get("actorFields")),
+        "targetFields": _ensure_list(detection.get("targetFields")),
         "cells": cells,
     }
+    if detection.get("groupingField") is not None:
+        payload["groupingField"] = detection["groupingField"]
+        payload["groupingThreshold"] = detection.get("groupingThreshold") or 10
+    return payload
 
 
 def yaml_to_update_input(detection: dict[str, Any]) -> dict[str, Any]:

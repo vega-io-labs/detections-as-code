@@ -45,9 +45,9 @@ logicDescription: "Matches Okta successful logins whose source IP appears in the
 attackScenario: "An adversary with stolen admin credentials routes their Okta login through Tor for anonymity, then pivots into AWS to create or modify privileged resources (new IAM users, new access keys, policy attachments) for persistence and privilege escalation. The chain narrows broad Tor-login signal down to the high-fidelity subset of Tor logins followed by privileged-service writes so analyst time is spent on the actionable cases."
 references:
   - "https://attack.mitre.org/techniques/T1090/003/"
-groupingFields:
+deduplicationFields:
   - "actor.user.email"
-groupingDurationSeconds: 3600
+deduplicationWindowSeconds: 3600
 
 cells:
   - name: "tor-okta-logins"

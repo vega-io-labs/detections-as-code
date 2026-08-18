@@ -32,10 +32,10 @@ attackScenario: "An adversary with stolen AWS root credentials logs in to the co
 references:
   - "https://docs.aws.amazon.com/IAM/latest/UserGuide/root-user-best-practices.html"
   - "https://attack.mitre.org/techniques/T1078/004/"
-groupingFields:
+deduplicationFields:
   - "account.id"
   - "actor.user.name"
-groupingDurationSeconds: 900
+deduplicationWindowSeconds: 900
 
 cells:
   - name: "Root-User-Console-Login-Events"

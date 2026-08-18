@@ -26,6 +26,7 @@ Before adopting Detection-as-Code, ensure the following are in place:
 2. Add your Vega access key as a repository secret:
    - GitHub: repo Settings → Secrets and variables → Actions
    - New repository secret: `VEGA_ACCESS_KEY`, paste the key
+   - Second repository secret: `VEGA_ACCESS_KEY_ID`, paste the key's ID (shown next to the key in the Vega UI). Access keys created on or after 2026-06-18 must send their ID on every request; keys created before that date work without it, so the secret is optional for older keys.
 
 3. (Optional) Protect the `main` branch:
    - GitHub: Settings → Branches → Add rule for `main`
@@ -93,8 +94,12 @@ Operational fields (`state`, `frequencyCron`, `lookBackSeconds`) are required by
 | `attackScenario` | string | `""` | Human-readable description of the adversary behaviour. |
 | `mitreTechniques` | list[string] | `[]` | MITRE technique IDs, e.g. `["T1078", "T1078.004"]`. Tactics are derived server-side. |
 | `references` | list[string] | `[]` | URLs related to the detection. |
-| `groupingFields` | list[string] | `[]` | OCSF dotted paths used to group hits into a single alert. |
-| `groupingDurationSeconds` | int | `null` | Grouping window in seconds. |
+| `deduplicationFields` | list[string] | `[]` | OCSF dotted paths used to suppress duplicate alerts: new events matching an active alert on every listed field update that alert instead of opening a new one. Legacy alias: `groupingFields`. |
+| `deduplicationWindowSeconds` | int | `0` | Deduplication window in seconds. `0` disables deduplication. Legacy alias: `groupingDurationSeconds`. |
+| `groupingField` | string | `null` | Burst protection: when one run returns more than `groupingThreshold` rows, results are grouped into one alert per distinct value of this normalized field. |
+| `groupingThreshold` | int | `10` | Row count that activates burst grouping. Range 2-100. Requires `groupingField`. |
+| `actorFields` | list[string] | `[]` | Priority-ordered field names used to extract the alert's Actor. Empty uses Vega's per-data-type defaults. |
+| `targetFields` | list[string] | `[]` | Priority-ordered field names used to extract the alert's Target. Empty uses Vega's per-data-type defaults. |
 
 ### YAML list conventions
 
@@ -105,7 +110,7 @@ references: []                                  # empty
 
 mitreTechniques: ["T1078", "T1078.004"]         # inline
 
-groupingFields:                                  # block
+deduplicationFields:                             # block
   - actor.user.name
   - src_endpoint.ip
 ```
@@ -125,9 +130,9 @@ attackScenario: "An adversary with stolen AWS root credentials logs in to the co
 references:
   - "https://docs.aws.amazon.com/IAM/latest/UserGuide/root-user-best-practices.html"
   - "https://attack.mitre.org/techniques/T1078/004/"
-groupingFields:
+deduplicationFields:
   - "actor.user.name"
-groupingDurationSeconds: 900
+deduplicationWindowSeconds: 900
 query: |-
   @CloudTrail
   | where event_name =~ "ConsoleLogin"
@@ -210,7 +215,7 @@ Three GitHub Actions workflows ship with this template:
 | **Sync Detections to Vega** | `.github/workflows/sync.yml` | Push to `main` touching `detections/**` or `scripts/**`. Also `workflow_dispatch`. | Reconciles every YAML against the tenant, batched in chunks of 100. `dry_run` and `no_deletes` inputs available on manual dispatch. |
 | **Sync ALL detections (manual)** | `.github/workflows/sync-all.yml` | Manual (`workflow_dispatch`) only | Same reconcile, but defaults to `dry_run=true` and `no_deletes=true`. Use for first-run bulk deploy or recovery after a partial sync. |
 
-Both sync workflows read `VEGA_ACCESS_KEY` from the repository secret. The tenant URL is `https://app.vega.io`.
+Both sync workflows read `VEGA_ACCESS_KEY` and `VEGA_ACCESS_KEY_ID` from the repository secrets. On scope-enabled (ABAC) tenants where the key is bound to multiple scopes, set the `VEGA_SCOPE_ID` repository variable. The tenant URL is `https://app.vega.io`.
 
 ## Reading the run summary
 
@@ -244,6 +249,7 @@ Before opening a pull request, reconcile against your tenant locally to preview 
 pip install -r requirements.txt
 
 export VEGA_ACCESS_KEY="..."                     # or pass --access-key
+export VEGA_ACCESS_KEY_ID="..."                  # or pass --access-key-id; required for keys created on or after 2026-06-18
 
 # Print the plan without applying it
 python -m scripts.sync \
@@ -308,6 +314,9 @@ Inside Vega, each merged change appears as a row in the detection's version-hist
 | Sync fails with `parse pipeline query language` | KQL syntax error. The line and column are shown in the workflow log. | Fix the KQL in a follow-up PR. |
 | Sync fails with `external_id "..." already exists` | That id was previously used. | Generate a new UUID; old ids remain reserved permanently. |
 | Sync exits non-zero but most detections succeeded | Per-detection result mapping: a subset has validation errors. | Review the workflow step summary to identify the failing detections and address each individually. |
+| Sync fails with `login_machine failed: 500 ... INTERNAL_SERVER_ERROR` | The access key is inactive - deactivated or past its expiry date. | Create a new access key in the Vega UI and update the `VEGA_ACCESS_KEY` and `VEGA_ACCESS_KEY_ID` secrets. |
+| Sync fails with `X-Vega-Key-Id header is required` | The key was created on or after 2026-06-18 and the `VEGA_ACCESS_KEY_ID` secret is not set. | Add the `VEGA_ACCESS_KEY_ID` repository secret with the key's ID. |
+| Login succeeds but every query fails with 403 `NO_SCOPE_FOR_ACCESS_KEY` or `SCOPE_SELECTION_REQUIRED` | The tenant has scopes (ABAC) enabled and the access key has zero or multiple scope bindings. | Bind the key to exactly one scope, or set the `VEGA_SCOPE_ID` repository variable to the scope UUID the sync should use. |
 | A chunk of detections all fail with the same `batch API error: ...` line | The API was unreachable or returned a transport error for that batch. | Re-run the workflow. Transient transport errors clear on retry; the next run is idempotent (no-op updates are skipped). |
 | Sync reports failures stating the detection already exists, yet the rule is visible in the UI | The first attempt landed on Vega but the response was lost in transit; the retry encountered a duplicate. | The detection is healthy. Re-run the workflow; the next pass records it as a no-op. |
 

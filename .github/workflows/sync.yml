@@ -35,7 +35,7 @@ jobs:
   sync:
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
 
       - name: Verify VEGA_ACCESS_KEY is set
         env:
@@ -48,7 +48,7 @@ jobs:
             exit 1
           fi
 
-      - uses: actions/setup-python@v5
+      - uses: actions/setup-python@v6
         with:
           python-version: '3.14'
 
@@ -58,6 +58,8 @@ jobs:
       - name: Sync to Vega
         env:
           VEGA_ACCESS_KEY: ${{ secrets.VEGA_ACCESS_KEY }}
+          VEGA_ACCESS_KEY_ID: ${{ secrets.VEGA_ACCESS_KEY_ID }}
+          VEGA_SCOPE_ID: ${{ vars.VEGA_SCOPE_ID }}
           VEGA_TENANT_URL: ${{ vars.VEGA_TENANT_URL || 'https://app.vega.io' }}
         run: |
           python -m scripts.sync \

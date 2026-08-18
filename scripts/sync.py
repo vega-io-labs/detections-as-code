@@ -59,6 +59,18 @@ _STEP_SUMMARY_WIDTH = 160
     help="Vega access key (default: $VEGA_ACCESS_KEY).",
 )
 @click.option(
+    "--access-key-id",
+    envvar="VEGA_ACCESS_KEY_ID",
+    help="Vega access key ID (default: $VEGA_ACCESS_KEY_ID). Required for "
+    "access keys created on or after 2026-06-18; older keys work without it.",
+)
+@click.option(
+    "--scope-id",
+    envvar="VEGA_SCOPE_ID",
+    help="Vega scope UUID (default: $VEGA_SCOPE_ID). Only needed on "
+    "ABAC-enabled tenants when the access key is bound to multiple scopes.",
+)
+@click.option(
     "--dry-run",
     is_flag=True,
     help="Print the plan without applying it.",
@@ -72,6 +84,8 @@ def main(
     detections_dirs: tuple[Path, ...],
     tenant_url: str,
     access_key: str | None,
+    access_key_id: str | None,
+    scope_id: str | None,
     dry_run: bool,
     no_deletes: bool,
 ) -> None:
@@ -89,7 +103,12 @@ def main(
     console.print(f"Loaded [bold]{len(yamls)}[/] YAML detection(s).")
 
     console.print(f"[cyan]Authenticating to[/] {tenant_url}")
-    client = VegaClient.login(access_key, tenant_url=tenant_url)
+    client = VegaClient.login(
+        access_key,
+        tenant_url=tenant_url,
+        access_key_id=access_key_id,
+        scope_id=scope_id,
+    )
 
     console.print("[cyan]Fetching current Vega state...[/]")
     vega = client.get_detections()

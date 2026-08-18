@@ -34,5 +34,5 @@ attackScenario: "An adversary <does what> to <achieve what goal>. Two-to-four se
 mitreTechniques: []                              # e.g. ["T1078.004"]; list the most specific applicable subtechnique only. Tactics are derived server-side.
 references: []                                   # e.g. ["https://attack.mitre.org/techniques/T1078/004/"]
 
-groupingFields: []                               # e.g. ["actor.user.name"]
-groupingDurationSeconds: null                    # int in seconds, or null
+deduplicationFields: []                               # e.g. ["actor.user.name"]
+deduplicationWindowSeconds: null                    # int in seconds, or null

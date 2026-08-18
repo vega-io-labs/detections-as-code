@@ -111,18 +111,32 @@ _UPDATE_DIFF_FIELDS = (
     "logicDescription",
     "attackScenario",
     "references",
-    "groupingFields",
-    "groupingDurationSeconds",
+    "deduplicationFields",
+    "groupingField",
+)
+
+# actorFields/targetFields are priority-ordered, so reordering is a real change
+# and they must not go through the order-insensitive list compare above.
+_UPDATE_DIFF_ORDERED_FIELDS = (
+    "actorFields",
+    "targetFields",
 )
 
 
 def _frequency_equal(yaml_value: str, vega_value: str | None) -> bool:
-    # Vega normalises `60m` to `@every 60m` server-side. Compare loosely.
+    # Vega normalises fixed intervals server-side (`60m` can read back as
+    # `@every 60m` or `FIXED_INTERVAL 60m`). Compare loosely, else every run
+    # sees a phantom diff and pushes a new detection version.
     if vega_value is None:
         return False
-    y = (yaml_value or "").strip().lower().removeprefix("@every ")
-    v = (vega_value or "").strip().lower().removeprefix("@every ")
-    return y == v
+
+    def _norm(value: str) -> str:
+        v = (value or "").strip().lower()
+        for prefix in ("@every ", "fixed_interval "):
+            v = v.removeprefix(prefix)
+        return v
+
+    return _norm(yaml_value) == _norm(vega_value)
 
 
 def _cells_equal(yaml_cells: list, vega_cells: list | None) -> bool:
@@ -152,6 +166,20 @@ def _is_no_op_update(
                 return False
         elif a != b:
             return False
+    for f in _UPDATE_DIFF_ORDERED_FIELDS:
+        if (payload.get(f) or []) != (vega_state.get(f) or []):
+            return False
+    # Vega reports a disabled window as either null or 0.
+    if (payload.get("deduplicationWindowSeconds") or 0) != (
+        vega_state.get("deduplicationWindowSeconds") or 0
+    ):
+        return False
+    # groupingThreshold only matters while a groupingField is set; without one
+    # Vega still reports its default threshold, which is not a real diff.
+    if payload.get("groupingField") is not None and payload.get(
+        "groupingThreshold"
+    ) != vega_state.get("groupingThreshold"):
+        return False
     if not _frequency_equal(
         payload.get("frequencyCron", ""), vega_state.get("frequencyCron")
     ):
@@ -217,9 +245,16 @@ def _apply_batched(
                     ActionResult(kind, p["externalId"], p["name"], False, err)
                 )
             continue
-        by_name = {r.get("name"): r for r in response.get("results", [])}
-        for p in batch:
-            res = by_name.get(p["name"])
+        # updateDetections returns results with an empty `name`, so results
+        # can only be matched back to the request by position. The API keeps
+        # request order; fall back to name matching if the counts diverge.
+        results = response.get("results", [])
+        if len(results) == len(batch):
+            matched = list(zip(batch, results))
+        else:
+            by_name = {r.get("name"): r for r in results}
+            matched = [(p, by_name.get(p["name"])) for p in batch]
+        for p, res in matched:
             if res and res.get("status") == "VALID":
                 report.add(ActionResult(kind, p["externalId"], p["name"], True))
             else:

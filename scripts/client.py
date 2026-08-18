@@ -65,10 +65,14 @@ class VegaClient:
         tenant_url: str = DEFAULT_TENANT_URL,
         jwt: str | None = None,
         timeout: int = DEFAULT_TIMEOUT_S,
+        access_key_id: str | None = None,
+        scope_id: str | None = None,
     ) -> None:
         self.tenant_url = tenant_url.rstrip("/")
         self.timeout = timeout
         self._jwt = jwt
+        self._access_key_id = access_key_id
+        self._scope_id = scope_id
         self._client: Client | None = None
         if jwt:
             self._build_client(jwt)
@@ -79,10 +83,18 @@ class VegaClient:
         access_key: str,
         tenant_url: str = DEFAULT_TENANT_URL,
         timeout: int = DEFAULT_TIMEOUT_S,
+        access_key_id: str | None = None,
+        scope_id: str | None = None,
     ) -> "VegaClient":
         url = f"{tenant_url.rstrip('/')}/api/v1/login_machine"
+        # Access keys created on or after 2026-06-18 must assert their key ID
+        # on every request via X-Vega-Key-Id; older keys are grandfathered.
+        headers = {"X-Vega-Key-Id": access_key_id} if access_key_id else {}
         response = requests.post(
-            url, json={"access_key": access_key}, timeout=timeout
+            url,
+            json={"access_key": access_key},
+            headers=headers,
+            timeout=timeout,
         )
         if response.status_code != 200:
             raise RuntimeError(
@@ -99,12 +111,25 @@ class VegaClient:
         jwt = body.get("session_jwt")
         if not jwt:
             raise RuntimeError("login_machine response missing session_jwt")
-        return cls(tenant_url=tenant_url, jwt=jwt, timeout=timeout)
+        return cls(
+            tenant_url=tenant_url,
+            jwt=jwt,
+            timeout=timeout,
+            access_key_id=access_key_id,
+            scope_id=scope_id,
+        )
 
     def _build_client(self, jwt: str) -> None:
+        headers = {"Jwtsessiontoken": jwt}
+        if self._access_key_id:
+            headers["X-Vega-Key-Id"] = self._access_key_id
+        # On ABAC-enabled tenants, a key bound to more than one scope must
+        # pick one per request or every query is rejected with 403.
+        if self._scope_id:
+            headers["X-Vega-Scope"] = self._scope_id
         transport = RequestsHTTPTransport(
             url=f"{self.tenant_url}/api/v1/query",
-            headers={"Jwtsessiontoken": jwt},
+            headers=headers,
             timeout=self.timeout,
             retries=MAX_RETRIES,  # transport-level retry on connection errors
         )
@@ -156,8 +181,12 @@ class VegaClient:
               logicDescription
               attackScenario
               references
-              groupingFields
-              groupingDurationSeconds
+              deduplicationFields
+              deduplicationWindowSeconds
+              groupingField
+              groupingThreshold
+              actorFields
+              targetFields
               cells { name query trigger }
             }
             total

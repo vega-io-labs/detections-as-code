@@ -199,10 +199,11 @@ references:
   - "https://example.com/internal-runbook"
 ```
 
-### `groupingFields` - optional, list of strings, default `[]`
+### `deduplicationFields` - optional, list of strings, default `[]`
 
-Result fields used to group hits in a single alert (instead of producing
-one alert per matching event).
+Result fields used to suppress duplicate alerts. New events that match an
+active alert on every listed field update that alert instead of opening a
+new one. `groupingFields` is accepted as a legacy alias.
 
 - **Type:** list of strings
 - **Required:** no
@@ -210,23 +211,71 @@ one alert per matching event).
 - **Format:** OCSF dotted paths, e.g. `actor.user.name`, `src_endpoint.ip`
 
 ```yaml
-groupingFields: ["actor.user.name"]
+deduplicationFields: ["actor.user.name"]
 
-groupingFields:
+deduplicationFields:
   - "actor.user.name"
   - "src_endpoint.ip"
 ```
 
-### `groupingDurationSeconds` - optional, int, default `null`
+### `deduplicationWindowSeconds` - optional, int, default `0`
 
-Time window over which `groupingFields` is applied.
+Time window over which `deduplicationFields` is applied. `0` disables
+deduplication. `groupingDurationSeconds` is accepted as a legacy alias.
 
-- **Type:** int (seconds) or `null`
+- **Type:** int (seconds)
 - **Required:** no
-- **Default:** `null`
+- **Default:** `0`
 
 ```yaml
-groupingDurationSeconds: 3600
+deduplicationWindowSeconds: 3600
+```
+
+### `groupingField` - optional, string, default `null`
+
+Burst protection. When a single detection run returns more rows than
+`groupingThreshold`, results are grouped into one alert per distinct value
+of this field instead of one alert per row. Pick the field that stays
+constant across the blast: the acting principal for endpoint/identity/cloud
+detections, the source for scans and sprays.
+
+- **Type:** string (a single normalized field name)
+- **Required:** no
+- **Default:** `null` (burst grouping collapses to a single alert)
+- **Note:** validated against the tenant's normalized-field catalog at sync
+  time; an unknown field fails the whole batch.
+
+```yaml
+groupingField: "actor.user.name"
+```
+
+### `groupingThreshold` - optional, int, default `10`
+
+Row count in a single run that activates burst grouping. Requires
+`groupingField`.
+
+- **Type:** int, range 2-100
+- **Required:** no
+- **Default:** `10`
+
+```yaml
+groupingField: "src_endpoint.ip"
+groupingThreshold: 25
+```
+
+### `actorFields` / `targetFields` - optional, list of strings, default `[]`
+
+Priority-ordered field names used to extract the alert's Actor and Target
+entities, highest priority first. Each entry is a normalized field name, a
+raw event field prefixed with `_raw.`, or a query projection alias. Empty
+falls back to Vega's per-data-type defaults.
+
+```yaml
+actorFields:
+  - "actor.user.name"
+  - "_raw.userIdentity.arn"
+targetFields:
+  - "device.hostname"
 ```
 
 ### `query` or `cells` - required (exactly one of them)
