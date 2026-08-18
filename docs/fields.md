@@ -52,9 +52,18 @@ id: "019e206b-17d9-75d6-97a4-b08750a5ef3c"      # placeholder; generate your own
 
 Generate one:
 ```bash
-uuidgen -7                                              # macOS 14+ / util-linux 2.39+
-python -c "import uuid; print(uuid.uuid7())"            # Python 3.14+
+# Python 3.14+
+python3 -c "import uuid; print(uuid.uuid7())"
+
+# any Python 3
+python3 -c "import os,time,uuid; b=bytearray(os.urandom(16)); b[0:6]=int(time.time()*1000).to_bytes(6,'big'); b[6]=(b[6]&0x0f)|0x70; b[8]=(b[8]&0x3f)|0x80; print(uuid.UUID(bytes=bytes(b)))"
+
+# util-linux 2.39+ (Linux only)
+uuidgen -7
 ```
+
+macOS `uuidgen` is not usable for this: it has no `-7` flag, and its output is an
+uppercase version 4 UUID, which the lowercase-only `id` regex rejects.
 
 ### `name` - required, string
 
