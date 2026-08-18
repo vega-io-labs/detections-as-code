@@ -146,10 +146,21 @@ query: |-
 Generate a UUID version 7. UUID v7 is time-ordered, lowercase, and matches the Vega `externalId` regex.
 
 ```bash
-uuidgen -7                                              # macOS 14+ / util-linux 2.39+
-python -c "import uuid; print(uuid.uuid7())"            # Python 3.14+
-python -c "import secrets,time; ms=int(time.time()*1000); r=secrets.randbits(74); print(f'{ms:012x}-{(0x7<<12)|(r>>62):04x}-{(0x8000)|((r>>48)&0x3fff):04x}-{r&0xffffffffffff:012x}'.replace('-','',1)[:36])"  # any Python
+# Python 3.14+
+python3 -c "import uuid; print(uuid.uuid7())"
+
+# any Python 3
+python3 -c "import os,time,uuid; b=bytearray(os.urandom(16)); b[0:6]=int(time.time()*1000).to_bytes(6,'big'); b[6]=(b[6]&0x0f)|0x70; b[8]=(b[8]&0x3f)|0x80; print(uuid.UUID(bytes=bytes(b)))"
+
+# util-linux 2.39+ (Linux). Not macOS: its uuidgen has no -7 and emits uppercase v4
+uuidgen -7
 ```
+
+> **macOS `uuidgen` does not work here.** It takes no `-7` flag, and plain `uuidgen`
+> returns an uppercase version 4 UUID such as `E87603A6-CAB0-42CF-AD76-A528EB04132F`.
+> That is rejected: the id regex is lowercase-only. Use one of the Python commands
+> above, or lowercase the output with `uuidgen | tr 'A-Z' 'a-z'` — though that still
+> gives you a v4, not the time-ordered v7 this template recommends.
 
 One id per detection; never reuse one across files.
 

@@ -319,10 +319,19 @@ def yaml_to_create_input(detection: dict[str, Any]) -> dict[str, Any]:
 
     ext_id = str(detection["id"]).strip()
     if not _EXTERNAL_ID_RE.match(ext_id):
+        # An uppercase UUID is the common way to land here: `uuidgen` on macOS
+        # emits one, and the difference is easy to miss when scanning hex.
+        hint = ""
+        if _EXTERNAL_ID_RE.match(ext_id.lower()):
+            hint = (
+                f" It only differs by case - use '{ext_id.lower()}'. "
+                f"Note that macOS 'uuidgen' returns an uppercase v4 UUID; "
+                f"see the README for a v7 generator."
+            )
         raise ValueError(
             f"{ext_id}: 'id' must match ^[a-z0-9][a-z0-9._-]{{0,127}}$ "
             f"(lowercase, alphanumeric + . _ -, 1-128 chars). "
-            f"Recommend a UUID v7."
+            f"Recommend a UUID v7.{hint}"
         )
 
     _reject_removed_fields(detection, ext_id)
