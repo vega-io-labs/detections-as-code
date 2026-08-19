@@ -25,7 +25,7 @@ from tenacity import (
 )
 
 DEFAULT_TENANT_URL = "https://app.vega.io"
-DEFAULT_PAGE_SIZE = 100
+DEFAULT_PAGE_SIZE = 100  # server cap, not a preference: >100 fails the request
 DEFAULT_TIMEOUT_S = 60
 MAX_RETRIES = 3
 RETRY_BASE_DELAY_S = 1.0
