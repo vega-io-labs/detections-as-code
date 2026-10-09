@@ -113,6 +113,32 @@ introduce risk.
 state: "test_mode"
 ```
 
+### `mode` - optional, string, default `alert`
+
+How the detection's alerts take part in triage, correlation and incident
+escalation.
+
+- **Type:** string
+- **Required:** no
+- **Default:** `alert`
+- **Allowed values:** `alert`, `evidence`, `monitor` (case-insensitive)
+  - `alert` - alerts go through AI triage and correlation and can escalate to an incident on their own
+  - `evidence` - alerts skip AI triage; they are escalated only when correlation places them in an incident
+  - `monitor` - alerts are recorded only; they skip triage and correlation and never create or join an incident
+- **Note:** `evidence` and `monitor` detections cannot carry triage skills or
+  "Always escalate to incident". Leave `skillIds` empty for them, and clear
+  "Always escalate to incident" in the Vega UI (it is UI-managed) before
+  switching a detection away from `alert`, or the update is rejected and
+  rolls back its batch.
+- **Note:** the key was briefly called `type` with a `signal` value in the API. The
+  sync rejects `type` so a stale YAML does not silently stay on alert.
+- **Note:** a change of mode on an existing detection is pushed on the next
+  sync and recorded as a new detection version, like any other field.
+
+```yaml
+mode: "evidence"
+```
+
 ### `frequencyCron` - required, string
 
 Schedule on which the detection runs.
@@ -187,10 +213,13 @@ Literal description of the query's match conditions. Shown in the Vega
 UI during triage to answer "what does this rule match?".
 
 - **Type:** string
-- **Required:** no (defaults to empty string)
+- **Required:** no (created empty when omitted)
 - **Style:** 2-4 sentences. Identify the data source, the event types
   selected, and the fields under evaluation. Restrict the content to
   query mechanics; leave the threat-model framing for `attackScenario`.
+- **Note:** cannot be cleared once set. The API rejects an empty value on
+  update, so removing the key from a YAML leaves the tenant text in place.
+  Replace the text instead of deleting it.
 
 ```yaml
 logicDescription: "Matches AWS CloudTrail ConsoleLogin events where the actor is the account root user."
@@ -202,14 +231,38 @@ Threat-model rationale for the detection. Written from the adversary's
 perspective to answer "why does this match indicate malicious activity?".
 
 - **Type:** string
-- **Required:** no (defaults to empty string)
+- **Required:** no (created empty when omitted)
 - **Style:** 2-4 sentences. State the attacker's objective and explain
   how the matched events advance it. Keep separate from the literal
   query description in `logicDescription`; conflating the two weakens
   both fields.
+- **Note:** cannot be cleared once set, like `logicDescription`. Removing
+  the key leaves the tenant text in place.
 
 ```yaml
 attackScenario: "An adversary with stolen AWS root credentials logs in to the console to perform privileged actions outside normal scoped-IAM access patterns. Root logins are exceedingly rare in healthy environments, so any root login warrants investigation."
+```
+
+### `skillIds` - optional, list of strings, default `[]`
+
+Skills from the Vega skills library that Vega loads when it triages the
+alerts this detection produces.
+
+- **Type:** list of strings
+- **Required:** no
+- **Default:** `[]`, no skills attached
+- **Constraints:** at most 20 IDs, no duplicates. Each must be the ID of a
+  skill that exists in your tenant and whose category is `TRIAGE` or
+  `INVESTIGATION`; the sync batch is rejected otherwise. Copy the ID from
+  the skill's page in the Vega UI or from the `getSkills` API.
+- **Note:** the YAML is the full list. Omitting the key or passing `[]`
+  detaches every skill, including skills attached in the Vega UI.
+- **Note:** `evidence` and `monitor` detections cannot carry skills; keep
+  the list empty for them.
+
+```yaml
+skillIds:
+  - "019e4c2b-7a10-7d3e-9c1f-2b6a8e0f4d11"
 ```
 
 ### `references` - optional, list of strings, default `[]`
@@ -443,6 +496,7 @@ the check runs without tenant access and cannot tell which a YAML will become.
 | `name` length 1-200 | translator | PR red |
 | `severity` is `1-4` or `LOW/MEDIUM/HIGH/CRITICAL` | translator | PR red |
 | `state` is `enabled/disabled/test_mode` (also accepts `test` / `test-mode` aliases) | translator | PR red |
+| `mode` is `alert/evidence/monitor` | translator | PR red |
 | `frequencyCron` is a recognised shape and resolves to 1m-31d | translator | PR red, accepted forms listed |
 | `lookBackSeconds` >= the `frequencyCron` interval and <= 31 days | translator | PR red |
 | `deduplicationWindowSeconds` within 0-86400 | translator | PR red |

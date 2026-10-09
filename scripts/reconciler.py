@@ -21,6 +21,7 @@ from typing import Any, Callable, Iterable, Literal
 import yaml
 
 from .client import VegaAPIError, VegaClient
+from .consts import UNCLEARABLE_TEXT_FIELDS
 from .consts import DetectionState
 from .translator import (
     frequency_interval_seconds,
@@ -113,10 +114,9 @@ _UPDATE_DIFF_FIELDS = (
     "name",
     "severity",
     "state",
+    "mode",
     "lookBackSeconds",
     "mitreTechniques",
-    "logicDescription",
-    "attackScenario",
     "references",
     "deduplicationFields",
 )
@@ -128,14 +128,15 @@ _UPDATE_DIFF_ORDERED_FIELDS = (
     "targetFields",
 )
 
-# Neither can be cleared through the API: an omitted value and an explicit null
-# are indistinguishable to the server, so it reads both as "leave unchanged".
-# They are therefore only compared when the YAML actually sets them - otherwise
-# a detection that once had a grouping field would report a diff on every run
-# and never converge.
+# None of these can be cleared through the API: the grouping pair because an
+# omitted value and an explicit null both read as "leave unchanged", the two
+# descriptions because an empty string is rejected. They are therefore only
+# compared when the YAML actually sets them - otherwise a detection that once
+# had a value would report a diff on every run and never converge.
 _UPDATE_DIFF_UNCLEARABLE_FIELDS = (
     "groupingField",
     "groupingThreshold",
+    *UNCLEARABLE_TEXT_FIELDS,
 )
 
 
@@ -203,6 +204,11 @@ def _is_no_op_update(
     for f in _UPDATE_DIFF_ORDERED_FIELDS:
         if (payload.get(f) or []) != (vega_state.get(f) or []):
             return False
+    # The API has returned the same skill several times on one detection, so
+    # the attached set is what matters, not the list.
+    vega_skill_ids = {s["id"] for s in vega_state.get("skills") or []}
+    if set(payload.get("skillIds") or []) != vega_skill_ids:
+        return False
     # Vega reports a disabled window as either null or 0.
     if (payload.get("deduplicationWindowSeconds") or 0) != (
         vega_state.get("deduplicationWindowSeconds") or 0
@@ -245,10 +251,15 @@ def build_plan(
                 plan.create_state_overrides[ext_id] = desired_state
 
     for ext_id, vdet in vega_by_external_id.items():
-        if ext_id not in yaml_by_id:
+        if ext_id not in yaml_by_id and not _is_library(vdet):
             plan.deletes.append(vdet)
 
     return plan
+
+
+def _is_library(vega_detection: dict[str, Any]) -> bool:
+    created_by = vega_detection.get("createdBy") or {}
+    return created_by.get("principalType") == "vega_library"
 
 
 def _format_errors(errors: list[dict[str, Any]]) -> str:

@@ -6,6 +6,8 @@ Mapping:
   cells  -> cells (or `detectionCells` alias)
   state  -> DetectionState enum value
   severity -> DetectionSeverity enum value (accepts int 1-4 or LOW|MEDIUM|HIGH|CRITICAL)
+  mode   -> DetectionMode enum value (alert|evidence|monitor, defaults to alert)
+  skillIds -> skillIds, the triage/investigation skills attached to the detection
 
 Omitted fields:
   mitreTactics    : derived server-side from mitreTechniques.
@@ -26,7 +28,7 @@ from .consts import (
     ACTOR_TARGET_FIELDS_MAX,
     DEDUPLICATION_WINDOW_SECONDS_MAX,
     DEFAULT_STATE,
-    DEFAULT_TYPE,
+    DEFAULT_MODE,
     FREQUENCY_INTERVAL_SECONDS_MAX,
     FREQUENCY_INTERVAL_SECONDS_MIN,
     GROUPING_THRESHOLD_MAX,
@@ -36,7 +38,11 @@ from .consts import (
     NAME_MAX_LEN,
     REMOVED_FIELDS,
     SEVERITY_MAP,
+    SKILL_IDS_MAX,
+    UNCLEARABLE_TEXT_FIELDS,
     VALID_STATES,
+    VALID_MODES,
+    DetectionMode,
     DetectionState,
 )
 
@@ -83,6 +89,17 @@ def _state_to_enum(value: Any) -> DetectionState:
     return DetectionState(upper)
 
 
+def _mode_to_enum(value: Any) -> DetectionMode:
+    if value is None:
+        return DEFAULT_MODE
+    upper = str(value).strip().upper()
+    if upper not in VALID_MODES:
+        raise ValueError(
+            f"invalid mode {value!r}: must be alert|evidence|monitor"
+        )
+    return DetectionMode(upper)
+
+
 def _ensure_list(value: Any) -> list:
     if value is None:
         return []
@@ -104,10 +121,7 @@ def _reject_removed_fields(detection: dict[str, Any], ext_id: str) -> None:
         if removed in detection:
             raise ValueError(
                 f"{ext_id}: '{removed}' is no longer accepted by the "
-                f"detection API. {guidance}. Moving over is a behaviour "
-                f"change rather than a rename - '{removed}' never affected "
-                f"how alerts were produced, and its successors do, so check "
-                f"the value still makes sense"
+                f"detection API. {guidance}"
             )
 
 
@@ -208,6 +222,25 @@ def _validate_entity_fields(detection: dict[str, Any], ext_id: str) -> None:
                     f"{ext_id}: '{field}[{i}]' must be a non-empty string "
                     f"(a normalized field name)"
                 )
+
+
+def _validate_skill_ids(detection: dict[str, Any], ext_id: str) -> None:
+    values = _ensure_list(detection.get("skillIds"))
+    if len(values) > SKILL_IDS_MAX:
+        raise ValueError(
+            f"{ext_id}: 'skillIds' accepts at most {SKILL_IDS_MAX} entries "
+            f"(got {len(values)})"
+        )
+    seen: set[str] = set()
+    for i, value in enumerate(values):
+        if not isinstance(value, str) or not value.strip():
+            raise ValueError(
+                f"{ext_id}: 'skillIds[{i}]' must be a non-empty string "
+                f"(a skill ID from the Vega skills library)"
+            )
+        if value in seen:
+            raise ValueError(f"{ext_id}: 'skillIds[{i}]' {value!r} is duplicated")
+        seen.add(value)
 
 
 def _validate_mitre_techniques(detection: dict[str, Any], ext_id: str) -> None:
@@ -369,6 +402,7 @@ def yaml_to_create_input(detection: dict[str, Any]) -> dict[str, Any]:
 
     _validate_mitre_techniques(detection, ext_id)
     _validate_entity_fields(detection, ext_id)
+    _validate_skill_ids(detection, ext_id)
     _validate_grouping(detection, ext_id)
 
     payload = {
@@ -377,7 +411,7 @@ def yaml_to_create_input(detection: dict[str, Any]) -> dict[str, Any]:
         "severity": _severity_to_enum(detection["severity"]),
         "frequencyCron": frequency,
         "lookBackSeconds": lookback_raw,
-        "type": str(detection.get("type", DEFAULT_TYPE)).upper(),
+        "mode": _mode_to_enum(detection.get("mode")).value,
         "mitreTechniques": _ensure_list(detection.get("mitreTechniques")),
         "logicDescription": detection.get("logicDescription") or "",
         "attackScenario": detection.get("attackScenario") or "",
@@ -390,6 +424,7 @@ def yaml_to_create_input(detection: dict[str, Any]) -> dict[str, Any]:
         ),
         "actorFields": _ensure_list(detection.get("actorFields")),
         "targetFields": _ensure_list(detection.get("targetFields")),
+        "skillIds": _ensure_list(detection.get("skillIds")),
         "cells": cells,
     }
     # Both grouping fields are omitted unless the YAML sets them. The API reads
@@ -428,10 +463,17 @@ def create_only_warnings(detection: dict[str, Any]) -> list[str]:
 
 def yaml_to_update_input(detection: dict[str, Any]) -> dict[str, Any]:
     create = yaml_to_create_input(detection)
-    return {
+    payload = {
         **create,
         "state": _state_to_enum(detection.get("state")).value,
     }
+    # updateDetections rejects an empty description, while createDetections
+    # requires the key, so an omitted description is sent empty on create and
+    # left out on update, where it keeps the tenant value.
+    for key in UNCLEARABLE_TEXT_FIELDS:
+        if not payload[key]:
+            del payload[key]
+    return payload
 
 
 def yaml_state(detection: dict[str, Any]) -> DetectionState:

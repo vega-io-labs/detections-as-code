@@ -23,6 +23,12 @@ query: |-
 
 # ----- OPTIONAL -----
 
+# mode = how the detection's alerts take part in triage and escalation.
+# alert    - AI triage + correlation, can open an incident on its own (default)
+# evidence - skips AI triage, escalates only when correlation places it in an incident
+# monitor  - recorded only, never creates or joins an incident
+mode: "alert"                                    # alert | evidence | monitor
+
 # logicDescription = literal description of what the query matches
 # (data source, events, fields). 2-4 sentences.
 logicDescription: "Matches <data source> events where <conditions>. Two-to-four sentences describing the query literally."
@@ -50,3 +56,8 @@ deduplicationWindowSeconds: 0                    # 0 disables deduplication; max
 # highest priority first. Leave empty to use Vega's per-data-type defaults.
 actorFields: []                                  # normalized field names, at most 5
 targetFields: []                                 # normalized field names, at most 5
+
+# Skills Vega loads when triaging this detection's alerts. IDs of TRIAGE or
+# INVESTIGATION skills in your tenant, at most 20. Keep empty for evidence
+# and monitor detections. This list replaces whatever is attached in the UI.
+skillIds: []

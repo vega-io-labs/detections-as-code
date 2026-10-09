@@ -19,6 +19,7 @@ The authoritative reference is [`docs/fields.md`](docs/fields.md). Key constrain
 
 - Severity: int `1-4` (`1=LOW, 2=MEDIUM, 3=HIGH, 4=CRITICAL`).
 - State: `enabled | disabled | test_mode`.
+- Mode: `alert | evidence | monitor`, optional, defaults to `alert`. Evidence and monitor detections cannot carry triage skills or always-escalate, which are UI-managed.
 - `id` regex: `^[a-z0-9][a-z0-9._-]{0,127}$` (UUID v7 satisfies this).
 - `name`: 1-200 characters.
 - `frequencyCron`: an hour/minute interval (`5m`, `1h`, `1h30m`), a 5-field cron, or an `@`-macro. Seconds and days are not interval units - `30s` and `2d` are rejected. Resolved interval must be 1 minute to 31 days.
@@ -32,7 +33,7 @@ The authoritative reference is [`docs/fields.md`](docs/fields.md). Key constrain
 
 `pr_validate.py` runs schema validation only on every PR. It rejects:
 - Missing/empty required fields
-- Invalid `id` regex or `severity`/`state` enum values
+- Invalid `id` regex or `severity`/`state`/`mode` enum values
 - `name` length out of `[1, 200]`
 - A `frequencyCron` shape or interval the scheduler will not accept
 - `lookBackSeconds` below the schedule interval or above 31 days
@@ -54,6 +55,7 @@ requests opened from forks validate under the same rules.
 - `logicDescription`: 2-4 sentences documenting the query's match conditions in mechanical terms. Identify the data source, the event types selected, and the fields under evaluation. Restrict the content to what the query does.
 - `attackScenario`: 2-4 sentences written from the adversary's perspective. State the attacker's objective and explain how the matched events advance it. Restrict the content to threat-model reasoning.
 - The two fields are intentionally distinct: `logicDescription` answers "what does the rule match?", `attackScenario` answers "why does the match indicate malicious activity?". Conflating the two weakens both.
+- `skillIds`: only IDs of `TRIAGE` or `INVESTIGATION` skills that exist in the tenant, at most 20. The list is authoritative on every sync, so an empty list detaches skills attached in the UI. Must be empty when `mode` is `evidence` or `monitor`.
 - `mitreTechniques`: list the most specific applicable subtechnique only. Including both `T1078` and `T1078.004` is redundant.
 - Avoid em-dashes; the customer-facing tone is plain.
 - Do not add `mitreTactics`, `dataSourcesIds`, or `tags` to the YAML; these are derived server-side or managed through the UI.
@@ -65,6 +67,7 @@ requests opened from forks validate under the same rules.
 - Every sync to an existing detection is recorded as a new version in the Vega UI's version-history pane.
 - Reverting a "create" PR through `git revert` removes the detection from the tenant. Reverting a "delete" PR fails: the id is already reserved.
 - The reconciler issues API calls in batches of up to 100 detections and maps the API's per-detection results back to each YAML, so the run summary names the rule that failed. Each batch is a single transaction, though: one invalid detection rolls back every other detection in the same chunk, which the summary reports as `rolled back: ...`. Whole-batch transport failures (API unreachable) are tagged with a `batch API error:` prefix instead.
+- `logicDescription` and `attackScenario` cannot be cleared through the API: an empty string is rejected on update. The reconciler omits them from the update when the YAML has no value, so the tenant text stays; replace it rather than deleting the key.
 - `groupingField` and `groupingThreshold` cannot be cleared through the API - an omitted value and an explicit null are indistinguishable to it. Removing the keys from a YAML leaves the tenant values in place; the reconciler stops tracking them rather than looping on a diff it cannot resolve.
 - No-op updates are skipped: the reconciler diffs each YAML against the current Vega state and silently drops detections already in the target shape. This avoids resetting dynamic schedules on unchanged rules and keeps the run-summary signal-to-noise ratio high.
 

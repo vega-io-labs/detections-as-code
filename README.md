@@ -6,7 +6,7 @@ Detection-as-Code (DaC) moves the authoring surface for tenant-custom detections
 
 ## Capabilities
 
-- **PR validation.** Every pull request runs schema lint against the changed YAMLs (required fields, severity values, state values, regex on `id`, schedule and lookback bounds, multi-cell constraints). Schema failures block the check before merge.
+- **PR validation.** Every pull request runs schema lint against the changed YAMLs (required fields, severity values, state and mode values, regex on `id`, schedule and lookback bounds, multi-cell constraints). Schema failures block the check before merge.
 - **Reconciling sync on merge.** On merge to `main`, the sync engine diffs every YAML against the current tenant state and submits only the deltas. Unmodified detections are skipped so dynamic schedules are not reset.
 - **Per-detection result reporting.** The reconciler batches API calls in chunks of up to 100 detections and maps each per-detection result back to its YAML, so the run summary names the rule that failed. Each batch is one transaction: an invalid detection rolls back the others in the same chunk, and they are reported as blocked rather than applied. This is what the PR check exists to prevent.
 - **Auditable run summary.** Every sync writes a pass/fail table to the GitHub Actions step summary, with API errors quoted verbatim. Whole-batch failures (API unreachable, tenant outage) are tagged with a `batch API error:` prefix so they read as infrastructure issues rather than detection-level failures.
@@ -90,6 +90,7 @@ Operational fields (`state`, `frequencyCron`, `lookBackSeconds`) are required by
 
 | Field | Type | Default | Notes |
 |---|---|---|---|
+| `mode` | string | `alert` | How the detection's alerts take part in triage: `alert` (AI triage, correlation, can open an incident), `evidence` (skips triage, escalates only through correlation) or `monitor` (recorded only). |
 | `logicDescription` | string | `""` | Human-readable description of what the detection looks for. Shown to analysts during triage. |
 | `attackScenario` | string | `""` | Human-readable description of the adversary behaviour. |
 | `mitreTechniques` | list[string] | `[]` | MITRE technique IDs, e.g. `["T1078", "T1078.004"]`. Tactics are derived server-side. |
@@ -100,6 +101,7 @@ Operational fields (`state`, `frequencyCron`, `lookBackSeconds`) are required by
 | `groupingThreshold` | int | `10` | Row count in one run that activates burst protection. Range 2-100. Applies with or without `groupingField`. |
 | `actorFields` | list[string] | `[]` | Priority-ordered normalized field names used to extract the alert's Actor, max 5. Empty uses Vega's per-data-type defaults. |
 | `targetFields` | list[string] | `[]` | Priority-ordered normalized field names used to extract the alert's Target, max 5. Empty uses Vega's per-data-type defaults. |
+| `skillIds` | list[string] | `[]` | IDs of `TRIAGE` or `INVESTIGATION` skills Vega loads when triaging this detection's alerts, max 20. The list is authoritative: an empty list detaches skills added in the UI. Must stay empty for `evidence` and `monitor` detections. |
 
 `groupingFields` and `groupingDurationSeconds` were removed from the detection API and are rejected by the sync rather than remapped. `groupingDurationSeconds` becomes `deduplicationWindowSeconds`; `groupingFields` has no single successor and resolves to either `deduplicationFields` or `groupingField` depending on what you meant. See [`docs/fields.md`](docs/fields.md#two-ways-to-reduce-alert-volume).
 
@@ -317,6 +319,7 @@ Inside Vega, each merged change appears as a row in the detection's version-hist
 | Validate fails with `'id' must match ^[a-z0-9]...` | id has uppercase, an invalid character, or starts with `-`/`.`/`_`. | Regenerate as a UUID v7 (lowercase, hex with hyphens). |
 | Validate fails with `'name' must be 1-200 characters` | name is empty or too long. | Trim. |
 | Validate fails with `invalid severity` / `invalid state` | severity is outside `1-4` / not in `LOW/MEDIUM/HIGH/CRITICAL`; state is not one of `enabled/disabled/test_mode`. | Use one of the listed values. |
+| Validate fails with `invalid mode` | mode is not one of `alert/evidence/monitor`. | Use one of the listed values, or drop the key to get `alert`. |
 | Validate fails with `exactly one cell must have 'trigger: true'` | Multi-cell YAML has zero or multiple trigger cells. | Mark exactly one cell `trigger: true`. |
 | Validate fails with `cells[i].name ... is duplicated` | Two cells in one detection share a name. | Make cell names unique within the detection. |
 | Validate warns `cells[i].name ... contains characters the API rejects when creating a detection` | Punctuation such as `.` in a cell name. | Harmless for a detection that already exists; rename before merging if it is new, or the create fails and rolls back its batch. |
@@ -356,7 +359,7 @@ Canonical Vega platform documentation:
 
 ## Limitations (v1)
 
-- **Custom detections only.** This template manages tenant-custom detections authored as YAML in this repository. Vega's built-in library detections are not in scope; manage those through the Vega UI.
+- **Custom detections only.** This template manages tenant-custom detections authored as YAML in this repository. Vega's built-in library detections are not in scope; manage those through the Vega UI. The sync never deletes a library detection, even though the API lists them next to the custom ones.
 - **No drift detection.** The sync workflow runs on pushes to `main` that touch `detections/**` or `scripts/**`, and on manual dispatch. Changes made to a synced detection through the Vega UI between repository syncs persist silently and are reverted to the YAML state on the next sync. There is no warning, alert, or reconciliation report for UI-side edits. Treat the repository as the single source of truth, and run the **Sync ALL detections** workflow periodically to force-reconcile if UI edits are suspected.
 - Lookups and data sources must already exist in the tenant.
 - A merge that fails partway through leaves the tenant in a partially-applied state. Re-running the workflow after fixing the offending YAML converges (idempotent).

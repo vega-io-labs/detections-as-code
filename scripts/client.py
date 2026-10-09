@@ -178,6 +178,7 @@ class VegaClient:
               name
               severity
               state
+              mode
               frequencyCron
               lookBackSeconds
               mitreTactics
@@ -191,6 +192,8 @@ class VegaClient:
               groupingThreshold
               actorFields
               targetFields
+              skills { id }
+              createdBy { principalType }
               cells { name query trigger }
             }
             total
