@@ -251,10 +251,12 @@ alerts this detection produces.
 - **Type:** list of strings
 - **Required:** no
 - **Default:** `[]`, no skills attached
-- **Constraints:** at most 20 IDs, no duplicates. Each must be the ID of a
-  skill that exists in your tenant and whose category is `TRIAGE` or
-  `INVESTIGATION`; the sync batch is rejected otherwise. Copy the ID from
-  the skill's page in the Vega UI or from the `getSkills` API.
+- **Constraints:** at most 20 IDs, no duplicates. Each must be a skill whose
+  type is `TRIAGE` or `INVESTIGATION`; the sync batch is rejected otherwise.
+- **Values:** for a skill under `skills/`, the `id` in its `SKILL.md`; the
+  sync swaps in the id Vega assigned (see [`skills.md`](skills.md)). For any
+  other skill (a Vega library skill, a skill made in the UI), its Vega ID,
+  copied from the skill's page in the Vega UI or from the `getSkills` API.
 - **Note:** the YAML is the full list. Omitting the key or passing `[]`
   detaches every skill, including skills attached in the Vega UI.
 - **Note:** `evidence` and `monitor` detections cannot carry skills; keep
