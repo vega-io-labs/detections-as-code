@@ -1,6 +1,7 @@
-name: Sync ALL detections (manual)
+name: Sync ALL detections, skills and memories (manual)
 
-# Manually-triggered re-sync of every detection YAML against the tenant.
+# Manually-triggered re-sync of every detection, skill and memory against the
+# tenant.
 # Useful for:
 #   - First-time setup, to bulk-deploy your repo's detections to a tenant
 #   - Recovery after a partial sync failure
@@ -8,7 +9,8 @@ name: Sync ALL detections (manual)
 #
 # Same workflow as sync.yml, but never tied to a push event. Defaults to
 # --no-deletes to make first-run safer (a tenant with existing detections
-# will not get them wiped).
+# will not get them wiped). Skills made in the UI and memories without the
+# 'detections-as-code' label are never deleted, with or without the flag.
 
 on:
   workflow_dispatch:
@@ -69,5 +71,7 @@ jobs:
         run: |
           python -m scripts.sync \
             --detections-dir ./detections \
+            --skills-dir ./skills \
+            --memories-dir ./memories \
             ${{ inputs.dry_run && '--dry-run' || '' }} \
             ${{ inputs.no_deletes && '--no-deletes' || '' }}
