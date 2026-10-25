@@ -14,7 +14,7 @@ def test_identical_detection_is_a_no_op():
 def test_mode_change_is_an_update():
     plan = build_plan([make_yaml(mode="evidence")], [make_vega()])
     assert len(plan.updates) == 1
-    assert plan.updates[0]["mode"] == "EVIDENCE"
+    assert plan.updates[0].payload["mode"] == "EVIDENCE"
 
 
 def test_same_skills_in_any_order_is_a_no_op():
@@ -24,21 +24,21 @@ def test_same_skills_in_any_order_is_a_no_op():
 
 def test_skill_change_is_an_update():
     plan = build_plan([make_yaml()], [make_vega(skills=[{"id": "s1"}])])
-    assert plan.updates[0]["skillIds"] == []
+    assert plan.updates[0].payload["skillIds"] == []
     plan = build_plan([make_yaml(skillIds=["s9"])], [make_vega()])
-    assert plan.updates[0]["skillIds"] == ["s9"]
+    assert plan.updates[0].payload["skillIds"] == ["s9"]
 
 
 def test_library_detections_are_never_deleted():
     library = make_vega(id="lib", externalId="lib-ext", createdBy={"principalType": "vega_library"})
     custom_orphan = make_vega(id="old", externalId="old-ext")
     plan = build_plan([make_yaml()], [make_vega(), library, custom_orphan])
-    assert [d["externalId"] for d in plan.deletes] == ["old-ext"]
+    assert [d.external_id for d in plan.deletes] == ["old-ext"]
 
 
 def test_missing_created_by_still_deletes_a_custom_orphan():
     orphan = make_vega(id="x", externalId="x-ext", createdBy=None)
-    assert [d["externalId"] for d in build_plan([], [orphan]).deletes] == ["x-ext"]
+    assert [d.external_id for d in build_plan([], [orphan]).deletes] == ["x-ext"]
 
 
 def test_missing_description_in_yaml_never_diffs():

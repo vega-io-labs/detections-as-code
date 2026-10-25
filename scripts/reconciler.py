@@ -16,96 +16,50 @@ from __future__ import annotations
 import re
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Any, Callable, Iterable, Literal
+from typing import Any, Callable, Iterable
 
 import yaml
 
 from .client import VegaAPIError, VegaClient
 from .consts import UNCLEARABLE_TEXT_FIELDS
 from .consts import DetectionState
+from .plan import ActionKind, ActionResult, Plan, Planned, SyncReport, Write
 from .translator import (
     frequency_interval_seconds,
     yaml_state,
     yaml_to_create_input,
     yaml_to_update_input,
 )
-from .utils import chunks
-
-ActionKind = Literal["create", "update", "delete", "set_state"]
+from .utils import UniqueKey, chunks, load_unique, yaml_files
 
 BATCH_SIZE = 100  # createDetections / updateDetections cap per call
 
 
 @dataclass
-class Plan:
-    creates: list[dict[str, Any]] = field(default_factory=list)
-    updates: list[dict[str, Any]] = field(default_factory=list)
-    deletes: list[dict[str, Any]] = field(default_factory=list)
+class DetectionPlan(Plan):
     create_state_overrides: dict[str, DetectionState] = field(
         default_factory=dict
     )
-    no_op_updates: int = 0
-
-    def summary(self) -> str:
-        return (
-            f"creates={len(self.creates)} "
-            f"updates={len(self.updates)} "
-            f"deletes={len(self.deletes)} "
-            f"no_op_skipped={self.no_op_updates}"
-        )
 
 
-@dataclass
-class ActionResult:
-    kind: ActionKind
-    external_id: str
-    name: str
-    success: bool
-    error: str | None = None
+def _planned(payload: dict[str, Any]) -> Write:
+    return Planned(payload["externalId"], payload["name"], payload)
 
 
-@dataclass
-class SyncReport:
-    results: list[ActionResult] = field(default_factory=list)
-
-    def add(self, r: ActionResult) -> None:
-        self.results.append(r)
-
-    @property
-    def succeeded(self) -> list[ActionResult]:
-        return [r for r in self.results if r.success]
-
-    @property
-    def failed(self) -> list[ActionResult]:
-        return [r for r in self.results if not r.success]
-
-    @property
-    def all_ok(self) -> bool:
-        return not self.failed
+def _load_detection_file(path: Path) -> dict[str, Any] | None:
+    with open(path, "r", encoding="utf-8") as fh:
+        doc = yaml.safe_load(fh)
+    if doc is not None and "id" not in doc:
+        raise ValueError(f"{path}: YAML missing required 'id'")
+    return doc
 
 
 def load_yaml_detections(detections_dirs: Iterable[Path]) -> list[dict[str, Any]]:
-    detections: list[dict[str, Any]] = []
-    seen_ids: dict[str, Path] = {}
-    for d in detections_dirs:
-        if not d.exists():
-            raise FileNotFoundError(f"detections dir not found: {d}")
-        files = sorted(list(d.glob("**/*.yaml")) + list(d.glob("**/*.yml")))
-        for f in files:
-            with open(f, "r", encoding="utf-8") as fh:
-                doc = yaml.safe_load(fh)
-            if doc is None:
-                continue
-            if "id" not in doc:
-                raise ValueError(f"{f}: YAML missing required 'id'")
-            ext_id = str(doc["id"])
-            if ext_id in seen_ids:
-                raise ValueError(
-                    f"{f}: duplicate id {ext_id!r} (also in {seen_ids[ext_id]})"
-                )
-            seen_ids[ext_id] = f
-            detections.append(doc)
-    return detections
+    return load_unique(
+        (f for d in detections_dirs for f in yaml_files(d)),
+        _load_detection_file,
+        [UniqueKey("id", lambda doc: str(doc["id"]))],
+    )
 
 
 # Fields that meaningfully describe a detection. If all of these match between
@@ -229,13 +183,13 @@ def _is_no_op_update(
 def build_plan(
     yaml_detections: list[dict[str, Any]],
     vega_detections: list[dict[str, Any]],
-) -> Plan:
+) -> DetectionPlan:
     vega_by_external_id = {
         d["externalId"]: d for d in vega_detections if d.get("externalId")
     }
     yaml_by_id = {str(d["id"]): d for d in yaml_detections}
 
-    plan = Plan()
+    plan = DetectionPlan()
 
     for ext_id, ydet in yaml_by_id.items():
         if ext_id in vega_by_external_id:
@@ -243,16 +197,18 @@ def build_plan(
             if _is_no_op_update(update_payload, vega_by_external_id[ext_id]):
                 plan.no_op_updates += 1
                 continue
-            plan.updates.append(update_payload)
+            plan.updates.append(_planned(update_payload))
         else:
-            plan.creates.append(yaml_to_create_input(ydet))
+            plan.creates.append(_planned(yaml_to_create_input(ydet)))
             desired_state = yaml_state(ydet)
             if desired_state != DetectionState.ENABLED:
                 plan.create_state_overrides[ext_id] = desired_state
 
     for ext_id, vdet in vega_by_external_id.items():
         if ext_id not in yaml_by_id and not _is_library(vdet):
-            plan.deletes.append(vdet)
+            plan.deletes.append(
+                Planned(ext_id, vdet.get("name") or "<unknown>", vdet["id"])
+            )
 
     return plan
 
@@ -270,11 +226,12 @@ def _format_errors(errors: list[dict[str, Any]]) -> str:
 
 def _apply_batched(
     kind: ActionKind,
-    payloads: list[dict[str, Any]],
+    entries: list[Write],
     api_call: Callable[[list[dict[str, Any]]], dict[str, Any]],
     report: SyncReport,
 ) -> None:
-    for batch in chunks(payloads, BATCH_SIZE):
+    for entries_batch in chunks(entries, BATCH_SIZE):
+        batch = [e.payload for e in entries_batch]
         try:
             response = api_call(batch)
         except (VegaAPIError, RuntimeError) as e:
@@ -348,7 +305,7 @@ def _apply_batched(
 
 
 def _apply_state_overrides(
-    client: VegaClient, plan: Plan, report: SyncReport
+    client: VegaClient, plan: DetectionPlan, report: SyncReport
 ) -> None:
     if not plan.create_state_overrides:
         return
@@ -404,27 +361,25 @@ def _apply_state_overrides(
 
 
 def execute_plan(
-    client: VegaClient,
-    plan: Plan,
-    dry_run: bool = False,
-    skip_deletes: bool = False,
+    client: VegaClient, plan: DetectionPlan, skip_deletes: bool = False
 ) -> SyncReport:
     report = SyncReport()
-    if dry_run:
-        return report
-
     _apply_batched("create", plan.creates, client.create_detections, report)
     _apply_state_overrides(client, plan, report)
     _apply_batched("update", plan.updates, client.update_detections, report)
 
-    if plan.deletes and not skip_deletes:
-        for vdet in plan.deletes:
-            ext_id = vdet.get("externalId") or "<unknown>"
-            name = vdet.get("name") or "<unknown>"
+    if not skip_deletes:
+        for entry in plan.deletes:
             try:
-                client.delete_detection(vdet["id"])
-                report.add(ActionResult("delete", ext_id, name, True))
+                client.delete_detection(entry.payload)
+                report.add(
+                    ActionResult("delete", entry.external_id, entry.name, True)
+                )
             except (VegaAPIError, RuntimeError) as e:
-                report.add(ActionResult("delete", ext_id, name, False, str(e)))
+                report.add(
+                    ActionResult(
+                        "delete", entry.external_id, entry.name, False, str(e)
+                    )
+                )
 
     return report

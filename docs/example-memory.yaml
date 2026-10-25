@@ -1,0 +1,36 @@
+# Example memory: known benign activity from an approved scanner.
+#
+# Without this memory, an agent triaging a port scan or a burst of failed
+# logins from 192.0.2.10 has to work out from scratch that it is the weekly
+# vulnerability scan. With it, the agent can close the alert as expected and
+# still escalate anything that falls outside what the memory describes.
+#
+# Copy into memories/ and adapt the values to your environment.
+
+title: "Approved vulnerability scanner scanner-01"
+description: "Weekly authenticated vulnerability scans from scanner-01 (192.0.2.10) are expected and approved."
+content: |-
+  scanner-01 (192.0.2.10) is the security team's vulnerability scanner. It
+  runs authenticated scans against the server and workstation subnets every
+  Sunday between 02:00 and 06:00 UTC, using the service account
+  svc-vulnscan@example.com.
+
+  Expected during the window: port scans, many failed and successful logins
+  from svc-vulnscan, and service enumeration on every host it reaches.
+
+  Not covered, escalate instead:
+  - Any activity from 192.0.2.10 outside the Sunday window.
+  - svc-vulnscan logging in from any other source address.
+  - Writes, process launches or file changes on scanned hosts.
+
+  Owner: the security engineering team. Change requests go through the
+  scanner change ticket queue.
+status: "enabled"
+entities:
+  - type: device
+    value: "scanner-01"
+  - type: ip
+    value: "192.0.2.10"
+  - type: account
+    value: "svc-vulnscan@example.com"
+labels: []

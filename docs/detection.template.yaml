@@ -58,6 +58,7 @@ actorFields: []                                  # normalized field names, at mo
 targetFields: []                                 # normalized field names, at most 5
 
 # Skills Vega loads when triaging this detection's alerts. IDs of TRIAGE or
-# INVESTIGATION skills in your tenant, at most 20. Keep empty for evidence
-# and monitor detections. This list replaces whatever is attached in the UI.
+# INVESTIGATION skills, at most 20: the `id` of a SKILL.md under skills/, or
+# the Vega ID of any other skill. Keep empty for evidence and monitor
+# detections. This list replaces whatever is attached in the UI.
 skillIds: []
