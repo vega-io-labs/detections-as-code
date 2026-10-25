@@ -1,0 +1,38 @@
+# Vega Memory-as-Code - YAML template
+#
+# Copy this file into memories/ (any subfolder is fine), rename it, and fill
+# in the values. One memory per file.
+#
+# A memory is a note about your environment that Vega agents read when they
+# triage alerts and investigate incidents: known benign activity, the owner of
+# an asset, an accepted risk, a standing instruction.
+#
+# The title is what links this file to its memory in Vega. Changing the title
+# replaces the memory (delete + create), so pick one that will last.
+#
+# See docs/memories.md for the full field reference.
+
+# ----- REQUIRED -----
+
+title: "REPLACE WITH A SHORT, SPECIFIC TITLE"    # 1-150 characters, unique across memories/
+description: "One line that tells an agent when this memory applies."   # 1-300 characters, single line
+content: |-
+  The full note, 1-5000 characters. Say what is expected, who owns it, and
+  what would make the same activity suspicious after all.
+
+# ----- OPTIONAL -----
+
+status: "enabled"                                # enabled | disabled (agents only use enabled memories)
+# expiresAt: "2027-01-31T00:00:00Z"              # ISO 8601; agents stop using the memory after this time
+
+# What the memory is about. Types: account | device | ip | domain. At most 50.
+entities: []
+#  - type: device
+#    value: "scanner-01"
+#  - type: ip
+#    value: "192.0.2.10"
+
+# Names of labels that already exist in your tenant. The sync adds the
+# 'detections-as-code' label by itself; do not list it here. This list
+# replaces whatever labels are attached in the UI.
+labels: []

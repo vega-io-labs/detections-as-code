@@ -1,0 +1,1721 @@
+# The Vega public GraphQL API, trimmed to the operations scripts/client.py
+# calls. Replace it when the API changes, so tests/test_client.py catches a
+# drift before a customer sync does.
+#
+# Source: services/go/gateway/api/v1/services/endpoints/api-docs/*.public.graphql
+# in the Vega monorepo. Custom directives and the root fields the client does
+# not call were dropped; every input and type it sends is kept as is.
+
+type Query {
+  """
+  Retrieve detections with filtering and offset/limit pagination.
+  
+  Returned fields for each detection are determined by the GraphQL selection set.
+  Results are scoped to the organization resolved from the managed Access Key.
+  
+  Filter semantics:
+  - Filter categories are combined with AND logic.
+  - Within each array filter, values are combined with OR logic.
+  - `names` performs case-insensitive partial matching against detection names.
+  - `detectionIds` performs exact matching.
+  - `severities` performs exact matching.
+  - `tags` matches when any detection tag partially matches any provided tag, case-insensitively.
+  - `state` performs exact matching against detection enabled state.
+  - `health` performs exact matching against detection health state.
+  - `statuses` performs exact matching.
+  - `dataSourcesIds` matches when any detection data source ID equals any provided ID.
+  - `sourceKinds` performs exact matching and defaults to `[VEGA]` when omitted.
+  - `createdFrom` and `createdTo` are inclusive bounds on `createdAt`.
+  
+  Pagination returns up to `limit` items starting from `offset`.
+  `total` returns the total number of matching detections before pagination is applied.
+  """
+  getDetections(
+    """Exact-match filter for detection IDs."""
+    detectionIds: [ID!]
+
+    """Case-insensitive partial-match filter for detection names."""
+    names: [String!]
+
+    """Exact-match filter for detection severity."""
+    severities: [DetectionSeverity!]
+
+    """Case-insensitive partial-match filter for detection tags."""
+    tags: [String!]
+
+    """Exact-match filter for detection enabled state."""
+    state: [DetectionState!]
+
+    """Exact-match filter for detection health state."""
+    health: [HealthState!]
+
+    """Exact-match filter for detection visibility state."""
+    statuses: [DetectionStatus!]
+
+    """Match detections that reference any of the provided data source IDs."""
+    dataSourcesIds: [ID!]
+
+    """
+    Exact-match filter for which system creates the detection's alerts. Defaults to `[VEGA]`, so a caller that does not ask for other kinds keeps receiving only detections Vega runs itself.
+    """
+    sourceKinds: [DetectionSourceKind!] = [VEGA]
+
+    """
+    Lower bound for detection creation time. Must not be after `createdTo`.
+    """
+    createdFrom: Time
+
+    """Upper bound for detection creation time."""
+    createdTo: Time
+
+    """Maximum number of detections to return. Defaults to 100."""
+    limit: Int = 100
+
+    """Zero-based offset into the filtered result set. Defaults to 0."""
+    offset: Int = 0
+  ): GetDetectionsPayload!
+
+  """
+  List every label in the organization, including uncategorized labels (those with a null `categoryId`).
+  """
+  listLabels: [Label!]!
+
+  """
+  Retrieve memories with filtering and offset/limit pagination.
+  
+  Results are scoped to the organization resolved from the managed access key. Returns an `ACCESS_DENIED` error when memories are not enabled for your organization.
+  
+  Filter behavior:
+  - Different filter fields combine with AND. Values within a single field combine with OR.
+  - `search` is a case-insensitive substring match on `title`, `description` and `vegaMemoryId`. A leading `MEM-` in the term is ignored, and terms shorter than 3 characters match only `title` and `description`. All other filters use exact matching.
+  - Returns an `INVALID_REQUEST_FIELDS` error for a blank value in `createdBy`, `sourceActors` or `sourceIds`, and for an entity value that is blank or longer than 512 characters.
+  - `createdBy` and `sourceActors` take an actor as the response returns it, in `userId`, `displayName` or `email`. A value that matches no actor gives an empty result.
+  - In `createdBy`, `Vega` matches the memories that Vega or Vega staff created. In `sourceActors`, `Vega` matches the memories that Vega learned from an action of Vega staff.
+  - With no `statuses`, only `ENABLED`, `DISABLED` and `EXPIRED` memories are returned. Memories in `PENDING_REVIEW` or `IGNORED` status are returned only when `statuses` names that status.
+  - `createdFrom` / `createdTo`, `updatedFrom` / `updatedTo` and `expiresFrom` / `expiresTo` are inclusive time bounds. A memory without `expiresAt` never matches an expiration bound.
+  
+  Sorting:
+  - `sortBy` selects the field, `sortOrder` the direction. Defaults to `UPDATED_AT` / `DESC`.
+  - Memories that tie on the sort field are ordered by `id`, so the order is total and stable.
+  
+  Pagination returns up to `limit` items starting at `offset`. `total` is the number of matching memories before pagination.
+  """
+  getMemories(
+    """
+    Case-insensitive substring filter on memory titles, descriptions and `MEM-<x>` identifiers.
+    """
+    search: String
+
+    """
+    Filter by memory status. Defaults to `ENABLED`, `DISABLED` and `EXPIRED`. Name `PENDING_REVIEW` or `IGNORED` to get the memories in that status.
+    """
+    statuses: [MemoryStatusPublic!]
+
+    """
+    Filter by expiration. `true` returns only memories past their `expiresAt`, `false` only memories that are not. Omit to return both.
+    """
+    expired: Boolean
+
+    """
+    Actors that created the memory, as returned in `createdBy.userId`, `createdBy.displayName` or `createdBy.email`. Names and emails match without regard to case. `Vega` matches the memories that Vega or Vega staff created.
+    """
+    createdBy: [String!]
+
+    """
+    Actors whose action Vega learned the memory from, as returned in `source.actor.userId`, `source.actor.displayName` or `source.actor.email`. Names and emails match without regard to case. `Vega` matches the memories that Vega learned from an action of Vega staff.
+    """
+    sourceActors: [String!]
+
+    """Filter by origin of the memory."""
+    sourceTypes: [MemorySourceTypePublic!]
+
+    """
+    Filter by identifier (UUID) of the source object: the incident, the alert, or the document.
+    """
+    sourceIds: [String!]
+
+    """
+    Filter by entity. A memory matches when it has at least one of the entities. At most 50 entities.
+    """
+    entities: [MemoryEntityFilterPublicInput!]
+
+    """
+    Filter by label identifier. A memory matches when it has at least one of the labels.
+    """
+    labelIds: [UUID!]
+
+    """Lower bound for memory creation time."""
+    createdFrom: Time
+
+    """Upper bound for memory creation time."""
+    createdTo: Time
+
+    """Lower bound for the time of the last change to the memory."""
+    updatedFrom: Time
+
+    """Upper bound for the time of the last change to the memory."""
+    updatedTo: Time
+
+    """Lower bound for the memory expiration time."""
+    expiresFrom: Time
+
+    """Upper bound for the memory expiration time."""
+    expiresTo: Time
+
+    """Field to sort results by. Defaults to `UPDATED_AT`."""
+    sortBy: MemorySortFieldPublic = UPDATED_AT
+
+    """Direction to sort results in. Defaults to `DESC` (newest first)."""
+    sortOrder: SortOrderPublic = DESC
+
+    """
+    Maximum number of memories to return. Defaults to 50. Must be between 1 and 500.
+    """
+    limit: Int = 50
+
+    """Zero-based offset into the filtered result set. Defaults to 0."""
+    offset: Int = 0
+  ): GetMemoriesPayload!
+
+  """
+  Retrieve skills with filtering and offset/limit pagination.
+  
+  Returned fields for each skill are determined by the GraphQL selection set.
+  Results include both the skills owned by the organization resolved from the
+  managed Access Key and the read-only Vega library skills available to it.
+  
+  Filter semantics:
+  - Filter categories are combined with AND logic.
+  - Within each array filter, values are combined with OR logic.
+  - `names` performs case-insensitive partial matching against skill names.
+  - `ids` performs exact matching.
+  - `types` performs exact matching against the skill category.
+  
+  Pagination returns up to `limit` items starting from `offset`.
+  `total` returns the total number of matching skills before pagination is applied.
+  """
+  getSkills(
+    """Exact-match filter for skill IDs."""
+    ids: [ID!]
+
+    """Case-insensitive partial-match filter for skill names."""
+    names: [String!]
+
+    """Exact-match filter for skill category."""
+    types: [SkillType!]
+
+    """Maximum number of skills to return. Defaults to 100."""
+    limit: Int = 100
+
+    """Zero-based offset into the filtered result set. Defaults to 0."""
+    offset: Int = 0
+  ): GetSkillsPayload!
+}
+
+"""Paginated collection of detections."""
+type GetDetectionsPayload {
+  """Detections matching the provided filters."""
+  detections: [DetectionInfo!]!
+
+  """
+  Total number of detections matching the provided filters, ignoring pagination.
+  """
+  total: Int!
+
+  """Applied page size."""
+  limit: Int!
+
+  """Applied pagination offset."""
+  offset: Int!
+}
+
+"""Detection resource returned by detection operations."""
+type DetectionInfo {
+  """System-generated unique identifier for the detection."""
+  id: ID!
+
+  """
+  Unique identifier for the detection used for programmatic access and detection-as-code workflows. Defaults to the system-generated ID if not provided on creation. Must match ^[a-z0-9][a-z0-9._-]{0,127}$.
+  """
+  externalId: String!
+
+  """Unique detection name."""
+  name: String!
+
+  """Severity level of the detection."""
+  severity: DetectionSeverity!
+
+  """
+  Enabled state of the detection. Null if not applicable to the current operation.
+  """
+  state: DetectionState
+
+  """
+  Health state of the detection. Null if not applicable (e.g., detection is disabled).
+  """
+  health: HealthState
+
+  """
+  Specific health issues affecting the detection, including warning-level issues that do not make it UNHEALTHY. Empty when the detection has no known issues or when health is not applicable (e.g., detection is disabled).
+  """
+  statusDetails: [DetectionStatusDetail!]!
+
+  """
+  How often the triggering cell runs. Defaults to `5m` when omitted on create.
+  """
+  frequencyCron: String!
+
+  """
+  Lookback window, in seconds, used by the triggering cell. Defaults to `300` when omitted on create.
+  """
+  lookBackSeconds: Int!
+
+  """Detection mode. Defaults to `ALERT` when omitted on create."""
+  mode: DetectionMode!
+
+  """
+  Which system creates this detection's alerts. When this is `NATIVE_ALERT`, `frequencyCron` sets how often Vega collects the vendor's alerts, while `lookBackSeconds`, `groupingField`, `groupingThreshold`, `deduplicationFields` and `deduplicationWindowSeconds` are still populated but carry no meaning, and empty `mitreTactics` and `mitreTechniques` mean "not mapped at rule level" rather than "no MITRE".
+  """
+  sourceKind: DetectionSourceKind!
+
+  """
+  Detection visibility state. Null if not applicable to the current operation.
+  """
+  status: DetectionStatus
+
+  """Mapped MITRE ATT&CK tactics."""
+  mitreTactics: [String!]!
+
+  """Mapped MITRE ATT&CK techniques."""
+  mitreTechniques: [String!]!
+
+  """Human-readable detection logic description. Null if not set."""
+  logicDescription: String
+
+  """Human-readable attack scenario description. Null if not set."""
+  attackScenario: String
+
+  """Reference URLs related to the detection."""
+  references: [String!]!
+
+  """
+  Normalized field names used to suppress duplicate alerts. New events that match an active alert on every listed field update that alert instead of creating a new one. Empty when deduplication groups all matching events into a single alert.
+  """
+  deduplicationFields: [String!]!
+
+  """
+  Deduplication window, in seconds, during which matching events update the existing alert instead of creating a new one. Null or 0 means deduplication is disabled.
+  """
+  deduplicationWindowSeconds: Int
+
+  """
+  Ordered list of normalized field names used to extract Actor values from alert results, highest priority first. Empty if the detection uses Vega's per-data-type fallback.
+  """
+  actorFields: [String!]!
+
+  """
+  Ordered list of normalized field names used to extract Target values from alert results, highest priority first. Empty if the detection uses Vega's per-data-type fallback.
+  """
+  targetFields: [String!]!
+
+  """Referenced data source IDs."""
+  dataSourcesIds: [ID!]!
+
+  """Detection tags."""
+  tags: [String!]!
+
+  """Detection query cells."""
+  cells: [DetectionCellInfo!]!
+
+  """Creation timestamp in ISO 8601 format."""
+  createdAt: Time!
+
+  """Authentication principal that created the detection."""
+  createdBy: DetectionPrincipal!
+
+  """Field name used for event grouping. Null if not configured."""
+  groupingField: String
+
+  """Number of matches required to activate event grouping. Range 2-100."""
+  groupingThreshold: Int!
+
+  """
+  Labels attached to the detection. Empty if the detection has no labels.
+  """
+  labels: [Label!]!
+
+  """
+  Skills attached to the detection, used when Vega triages the alerts it produces. Empty when no skills are attached. A skill that has since been deleted or is no longer accessible is omitted.
+  """
+  skills: [SkillReference!]!
+
+  """
+  Non-negative number of alerts this detection produced in the last 30 days, counted when the request is served, and `0` when it has not fired in that window.
+  """
+  alertsCount30d: Int!
+
+  """
+  Relative path to open the detection in the Vega UI; resolve against your Vega app host.
+  """
+  href: String!
+}
+
+"""Severity level of a detection."""
+enum DetectionSeverity {
+  """Low severity."""
+  LOW
+
+  """Medium severity."""
+  MEDIUM
+
+  """High severity."""
+  HIGH
+
+  """Critical severity."""
+  CRITICAL
+}
+
+"""Lifecycle state of a detection."""
+enum DetectionState {
+  """
+  Detection is enabled and actively running. Alerts it produces drive incident creation, webhooks, and every other downstream action.
+  """
+  ENABLED
+
+  """Detection is disabled and not running."""
+  DISABLED
+
+  """
+  Detection runs on schedule and produces alerts, but those alerts are isolated from incident correlation, webhooks, and the main Alerts view. Use this mode to validate a detection's tuning in production data before promoting it to ENABLED.
+  """
+  TEST_MODE
+
+  """
+  Detection is an unfinished draft: it is never scheduled and never produces alerts, and it stays hidden from detection lists until it is saved (moved to another state).
+  """
+  DRAFT
+}
+
+"""Health state of a detection."""
+enum HealthState {
+  """
+  Detection is running normally. Warning-level issues (delayed runs or limited data) still count as healthy because the detection keeps producing alerts.
+  """
+  HEALTHY
+
+  """
+  Detection has a blocking issue that stops it from producing alerts as expected.
+  """
+  UNHEALTHY
+}
+
+"""
+Specific issue affecting a detection's health. A detection can report these while still being HEALTHY when the only issues are warning-level (MISSING_DATA, DELAYED).
+"""
+enum DetectionStatusDetail {
+  """No data source is configured for the detection."""
+  NO_DATA_SOURCE
+
+  """
+  One or more of the detection's data sources have not received data within the expected window.
+  """
+  MISSING_DATA
+
+  """One or more scheduled detection runs did not complete."""
+  RUN_ERROR
+
+  """A lookup table referenced by the detection is missing or unavailable."""
+  MISSING_LOOKUP_TABLE
+
+  """The detection query is invalid."""
+  QUERY_INVALID
+
+  """The detection query's result exceeds the connector's result-set limit."""
+  QUERY_RESULT_TOO_LARGE
+
+  """
+  The detection has not produced a successful run within its expected cadence.
+  """
+  DELAYED
+}
+
+"""
+Mode of a detection. Determines how its alerts take part in triage and escalation.
+"""
+enum DetectionMode {
+  """
+  Alerts go through AI triage and correlation and can escalate to an incident on their own.
+  """
+  ALERT
+
+  """
+  Alerts skip AI triage and are escalated only when correlation places them in an incident. `alwaysCreateIncident` and triage skills are not allowed.
+  """
+  EVIDENCE
+
+  """
+  Alerts are recorded only. They skip AI triage and correlation and never create or join an incident; `alwaysCreateIncident` and triage skills are not allowed.
+  """
+  MONITOR
+}
+
+"""
+Which system creates a detection's alerts, independently of what `type` says it produces.
+"""
+enum DetectionSourceKind {
+  """Vega runs the detection's KQL on Vega's schedule."""
+  VEGA
+
+  """
+  A projection of a vendor's own alert definition. The vendor decides when it fires; `frequencyCron` sets how often Vega collects what fired (a per-instance override applies, like any detection). `lookBackSeconds` on the detection still carries no meaning — the window a run actually queried is recorded on the alert snapshot's lookback. The grouping fields and the deduplication fields carry no meaning, and empty `mitreTactics` and `mitreTechniques` mean "not mapped at rule level" rather than "no MITRE".
+  """
+  NATIVE_ALERT
+}
+
+"""Visibility state of a detection."""
+enum DetectionStatus {
+  """Detection is visible."""
+  VISIBLE
+}
+
+"""A query cell that is part of a detection."""
+type DetectionCellInfo {
+  """Unique name of the cell within the detection."""
+  name: String!
+
+  """Vega KQL query executed by this cell."""
+  query: String!
+
+  """
+  Marks this cell as the triggering cell. Exactly one cell per detection must be true.
+  """
+  trigger: Boolean!
+}
+
+scalar Time
+
+"""Authentication principal that created the detection."""
+type DetectionPrincipal {
+  """Type of principal used for creation."""
+  principalType: String!
+
+  """Unique identifier of the principal."""
+  principalId: String!
+
+  """
+  Display name of the principal. `Vega` for detections from the Vega library.
+  """
+  displayName: String!
+}
+
+"""
+A tag that can be attached to detections, alerts, incidents and other objects to organize and filter them.
+"""
+type Label {
+  """Unique identifier of the label."""
+  id: UUID!
+
+  """
+  Identifier of the category the label belongs to. Null for an uncategorized label.
+  """
+  categoryId: UUID
+
+  """Display name of the label, unique within its category."""
+  name: String!
+
+  """Palette color the label is rendered with."""
+  color: PaletteColor!
+
+  """Number of objects the label is currently attached to."""
+  usageCount: Int!
+}
+
+scalar UUID
+
+"""Named color from the Vega palette, used to render labels and scopes."""
+enum PaletteColor {
+  PURPLE
+  BLUE
+  GREEN
+  ORANGE
+  RED
+  YELLOW
+  PINK
+  TEAL
+  LIGHT_PURPLE
+  LIGHT_BLUE
+  LIGHT_GREEN
+  LIGHT_ORANGE
+  LIGHT_RED
+  LIGHT_YELLOW
+  LIGHT_PINK
+  LIGHT_TEAL
+}
+
+"""
+A skill associated with another resource, identified by its ID and name. Returned by the `skills` field on detections, alerts, and incidents.
+"""
+type SkillReference {
+  """System-generated unique identifier of the skill."""
+  id: ID!
+
+  """
+  Human-readable name of the skill. For detections this is the skill's current name; for alerts and incidents it is the name recorded when the skill was loaded during triage or investigation.
+  """
+  name: String!
+
+  """
+  Version string of the skill, taken from its current definition. Null when the skill has no version set, or when it is no longer available in the library.
+  """
+  version: String
+}
+
+"""Paginated collection of memories."""
+type GetMemoriesPayload {
+  """Memories that match the filters."""
+  memories: [MemoryInfo!]!
+
+  """Total number of memories that match the filters, before pagination."""
+  total: Int!
+
+  """Applied page size."""
+  limit: Int!
+
+  """Applied pagination offset."""
+  offset: Int!
+}
+
+"""
+A memory: a note about your environment that Vega agents read when they triage and investigate, for example known benign activity or the owner of an asset.
+"""
+type MemoryInfo {
+  """Unique identifier of the memory."""
+  id: UUID!
+
+  """
+  Human-readable memory identifier shown in the Vega UI, in the `MEM-<x>` format (e.g. `MEM-K7QX2`). Use this to correlate API results with the UI. Null for a memory created before these identifiers existed.
+  """
+  vegaMemoryId: String
+
+  """Short title of the memory."""
+  title: String!
+
+  """
+  One-line summary of the memory. Vega agents read it to decide if the memory applies.
+  """
+  description: String!
+
+  """Full text of the memory."""
+  content: String!
+
+  """
+  Why Vega learned the memory, in full. Null for a memory that a user wrote.
+  """
+  whySaved: String
+
+  """Current status of the memory."""
+  status: MemoryStatusPublic!
+
+  """
+  Whether the memory is turned on. An `EXPIRED` memory can be on or off; it becomes `ENABLED` or `DISABLED` again when its `expiresAt` moves to the future.
+  """
+  enabled: Boolean!
+
+  """
+  True when `expiresAt` is in the past. A memory in `PENDING_REVIEW` or `IGNORED` status can also be expired.
+  """
+  expired: Boolean!
+
+  """
+  Time after which Vega agents stop using the memory, in ISO 8601 format. Null if the memory does not expire.
+  """
+  expiresAt: Time
+
+  """
+  Entities that the memory is about. Empty if the memory has no entities.
+  """
+  entities: [MemoryEntityPublic!]!
+
+  """Labels attached to the memory. Empty if the memory has no labels."""
+  labels: [Label!]!
+
+  """
+  User, access key or Vega that created the memory. Vega for memories that Vega learned.
+  """
+  createdBy: MemoryActorPublic!
+
+  """
+  User, access key or Vega that last changed the memory. Null if nobody changed the memory after it was created.
+  """
+  updatedBy: MemoryActorPublic
+
+  """Creation timestamp in ISO 8601 format."""
+  createdAt: Time!
+
+  """Timestamp of the last change to the memory in ISO 8601 format."""
+  updatedAt: Time!
+
+  """
+  Timestamp of the last time a Vega agent used the memory, in ISO 8601 format. Null if no agent used it yet.
+  """
+  lastUsedAt: Time
+
+  """Origin of the memory, with its full provenance when Vega learned it."""
+  source: MemorySourcePublic!
+}
+
+"""Status of a memory. Vega agents use only `ENABLED` memories."""
+enum MemoryStatusPublic {
+  """The memory is on. Vega agents use it."""
+  ENABLED
+
+  """The memory is off. Vega agents do not use it."""
+  DISABLED
+
+  """The memory is past its `expiresAt` time. Vega agents do not use it."""
+  EXPIRED
+
+  """
+  Vega learned the memory and it waits for a user to approve or ignore it in the Vega UI. Vega agents do not use it.
+  """
+  PENDING_REVIEW
+
+  """A user ignored the memory in review. Vega agents do not use it."""
+  IGNORED
+}
+
+"""
+An entity that a memory is about, for example an IP address or a user account.
+"""
+type MemoryEntityPublic {
+  """Type of the entity."""
+  type: MemoryEntityTypePublic!
+
+  """Value of the entity, for example `10.10.10.10`."""
+  value: String!
+}
+
+"""Type of an entity that a memory is about."""
+enum MemoryEntityTypePublic {
+  """User account or username."""
+  ACCOUNT
+
+  """Hostname of an endpoint or a server."""
+  DEVICE
+
+  """IPv4 or IPv6 address."""
+  IP
+
+  """Domain name."""
+  DOMAIN
+}
+
+"""User, access key or Vega that acted on a memory."""
+type MemoryActorPublic {
+  """
+  Stored identifier of the actor: a user identifier, an access key identifier, or the zero UUID for Vega.
+  """
+  userId: ID!
+
+  """
+  Display name of the actor. Either a username, the name of an access key, or `Vega`. The stored identifier when it matches no user and no access key.
+  """
+  displayName: String!
+
+  """
+  Email address of the actor. Null for Vega, for Vega staff, for an access key, and when the user is no longer in your organization.
+  """
+  email: String
+}
+
+"""
+Origin of a memory. For a memory that Vega learned, it identifies the object and the user action that Vega learned it from.
+"""
+type MemorySourcePublic {
+  """Origin of the memory."""
+  type: MemorySourceTypePublic!
+
+  """
+  Identifier (UUID) of the source object: the incident, the alert, or the document. Null for a `MANUAL` memory.
+  """
+  id: String
+
+  """
+  Human-readable identifier of the source object as the Vega UI shows it, for example `INC-1234` or `ALRT-5678`. Null for a source type without one, and when the object no longer exists.
+  """
+  displayId: String
+
+  """
+  User action that Vega learned the memory from. Null for a `MANUAL` memory.
+  """
+  action: MemorySourceActionPublic
+
+  """
+  User or access key whose action Vega learned the memory from. Null for a memory that its author wrote.
+  """
+  actor: MemoryActorPublic
+}
+
+"""Origin of a memory."""
+enum MemorySourceTypePublic {
+  """A user wrote the memory in the Vega UI or through the API."""
+  MANUAL
+
+  """Vega got the memory from a document that a user uploaded."""
+  DOCUMENT
+
+  """Vega learned the memory from an incident."""
+  INCIDENT
+
+  """Vega learned the memory from an alert."""
+  ALERT
+}
+
+"""User action that Vega learned a memory from."""
+enum MemorySourceActionPublic {
+  """
+  A user changed the verdict of the alert or incident that is the source of the memory.
+  """
+  VERDICT_OVERRIDE
+
+  """A user uploaded the document that is the source of the memory."""
+  DOCUMENT_UPLOAD
+}
+
+"""An entity to filter memories by."""
+input MemoryEntityFilterPublicInput {
+  """Type of the entity. Omit to match the value in every type."""
+  type: MemoryEntityTypePublic
+
+  """Value of the entity. Exact match, case-insensitive. 1-512 characters."""
+  value: String!
+}
+
+"""Field to sort memories by."""
+enum MemorySortFieldPublic {
+  """Memory creation time."""
+  CREATED_AT
+
+  """Time of the last change to the memory."""
+  UPDATED_AT
+}
+
+"""Direction to sort results in."""
+enum SortOrderPublic {
+  """Ascending. Oldest or smallest value first."""
+  ASC
+
+  """Descending. Newest or largest value first."""
+  DESC
+}
+
+"""Paginated collection of skills."""
+type GetSkillsPayload {
+  """Skills matching the provided filters."""
+  skills: [SkillInfo!]!
+
+  """
+  Total number of skills matching the provided filters, ignoring pagination.
+  """
+  total: Int!
+
+  """Applied page size."""
+  limit: Int!
+
+  """Applied pagination offset."""
+  offset: Int!
+}
+
+"""Skill resource returned by skill operations."""
+type SkillInfo {
+  """System-generated unique identifier for the skill."""
+  id: ID!
+
+  """
+  Stable client-chosen identifier for the skill, null when the skill was created without one.
+  """
+  externalId: String
+
+  """Unique skill name."""
+  name: String!
+
+  """Instructions that tell the agent how to perform the skill."""
+  instructions: String!
+
+  """Human-readable description of the skill. Null if not set."""
+  description: String
+
+  """Category of the skill. Null if the skill has no category set."""
+  type: SkillType
+
+  """Author of the skill. Null if not set."""
+  author: String
+
+  """Version string of the skill. Null if not set."""
+  version: String @deprecated(reason: "Versions are no longer part of the skill API and cannot be set through it. The field still returns whatever version a skill was stored with, and will be removed once no client selects it. Removal scheduled for 2027-04-15.")
+
+  """
+  True when the skill belongs to another tenant, as Vega library skills do, meaning the caller can read it but not modify or delete it.
+  """
+  readOnly: Boolean!
+
+  """Creation timestamp in ISO 8601 format."""
+  createdAt: Time!
+
+  """Last update timestamp in ISO 8601 format."""
+  updatedAt: Time!
+}
+
+"""
+Category of a skill, describing which agentic workflow the skill guides.
+"""
+enum SkillType {
+  """Skill that guides alert triage."""
+  TRIAGE
+
+  """Skill that guides incident investigation."""
+  INVESTIGATION
+
+  """Skill that guides detection tuning."""
+  TUNING
+
+  """Skill that guides threat hunting."""
+  HUNTING
+
+  """Skill that guides data exploration."""
+  EXPLORATION
+
+  """
+  Skill that turns a source, such as a SIEM rule or a MITRE ATT&CK technique, into detection behaviors.
+  """
+  DETECTION_GENERATION
+
+  """Skill that guides how the agent writes and changes tenant memories."""
+  MEMORY
+}
+
+type Mutation {
+  """
+  Create one or more detections.
+  
+  Detections are multi-cell via `cells`. A single-cell detection is represented by
+  providing exactly one cell with `trigger = true`. Exactly one cell must be the
+  triggering cell; that cell is executed routinely according to `frequencyCron` and
+  `lookBackSeconds`, and is the cell validated/executed during creation, including
+  resolution of any referenced cells.
+  
+  The operation is transactional: all detections must be valid for the mutation to
+  succeed. If any detection is invalid, no detections are created.
+  
+  Defaults applied when omitted:
+  - `status = VISIBLE`
+  - `mode = ALERT`
+  - `frequencyCron = '5m'`
+  - `lookBackSeconds = 300`
+  
+  Detection IDs are generated by the system and returned on success.
+  Supports up to 100 detections per request.
+  """
+  createDetections(
+    """Detections to create."""
+    input: CreateDetectionsInput!
+  ): CreateDetectionsPayload!
+
+  """
+  Update one or more existing detections.
+  
+  Each detection is identified by `detectionId`. The mutation supports partial
+  updates: only fields provided for a detection are modified; omitted fields
+  remain unchanged.
+  
+  Detections use the same multi-cell model as [createDetections](/api-reference/mutations/createdetections) via `cells`.
+  If `cells` is provided, it replaces the full existing cells array atomically.
+  
+  To toggle a detection's enabled state, prefer the dedicated `setDetectionsState`
+  mutation; you can also set the `state` field here to `ENABLED` or `DISABLED`. The
+  state change is idempotent: if the detection is already in the requested state, no
+  change is made.
+  
+  The operation is transactional: detections are updated only if all submitted
+  updates are valid. If any detection fails validation, no detections are updated.
+  """
+  updateDetections(
+    """Detections to update."""
+    input: UpdateDetectionsInput!
+  ): UpdateDetectionsPayload!
+
+  """
+  Enables or disables one or more detections.
+  
+  All specified detections are set to the same state (ENABLED or DISABLED).
+  The operation is idempotent: if a detection is already in the requested
+  state, it is still counted as successfully updated.
+  
+  Duplicate IDs are silently deduplicated. IDs that do not exist or have an
+  invalid format are silently skipped and will not appear in the response.
+  
+  The response contains only the IDs of detections that were successfully
+  updated. Partial success is allowed.
+  
+  Accepts up to 100 detection IDs per request.
+  """
+  setDetectionsState(
+    """Detection state changes to apply."""
+    input: SetDetectionsStateInput!
+  ): SetDetectionsStatePayload!
+
+  """
+  Delete a single detection by ID.
+  
+  Permanently removes the detection, its instances, associated notebook,
+  automations, and suggestion references. This action cannot be undone.
+  
+  The detection is identified by its `detectionInstanceId` (UUID).
+  On success, returns the deleted system generated uuid of the detection.
+  If not found, returns an error.
+  """
+  deleteDetection(
+    """Detection to delete."""
+    input: DeleteDetectionInput!
+  ): DeleteDetectionPayload!
+
+  """Create a new label, optionally inside a category."""
+  createLabelPublic(
+    """Definition of the label to create."""
+    input: CreateLabelPublicInput!
+  ): Label!
+
+  """
+  Create a memory. The access key or user of the request becomes its creator, and the memory is live at once: it does not wait for review.
+  
+  Returns a `MEMORY_LIMIT_REACHED` error when an `ENABLED` memory would go past the limit of active memories for your organization, a `LABELS_LABEL_NOT_FOUND` error when a `labelIds` value is not a label of your organization, and an `ACCESS_DENIED` error when memories are not enabled for your organization.
+  """
+  createMemoryPublic(
+    """Definition of the memory to create."""
+    input: CreateMemoryPublicInput!
+  ): MemoryInfo!
+
+  """
+  Change the title, description, content, status, expiration, entities or labels of a memory. Omitted fields keep their current value. Vega sets `updatedBy` and `updatedAt`, and keeps the creation and provenance fields. To attach or remove some labels and keep the others, use [modifyObjectLabels](/api-reference/mutations/modifyobjectlabels) with `objectType` `MEMORY`.
+  
+  Returns a `MEMORY_NOT_FOUND` error when no memory with this ID exists in your organization, an `INVALID_REQUEST_FIELDS` error when `status` is `ENABLED` for a memory in `PENDING_REVIEW` or `IGNORED` status, a `MEMORY_LIMIT_REACHED` error when enabling the memory, or removing or extending the expiration of an `ENABLED` memory that expired, would go past the limit of active memories for your organization, a `LABELS_LABEL_NOT_FOUND` error when a `labelIds` value is not a label of your organization, and an `ACCESS_DENIED` error when memories are not enabled for your organization.
+  """
+  updateMemoryPublic(
+    """Identifier of the memory and the fields to change."""
+    input: UpdateMemoryPublicInput!
+  ): MemoryInfo!
+
+  """
+  Delete a memory. Vega agents stop using it and it no longer appears in the memory list. The records of where agents used it before are kept. Returns a `MEMORY_NOT_FOUND` error when no memory with this ID exists in your organization, and an `ACCESS_DENIED` error when memories are not enabled for your organization.
+  """
+  deleteMemoryPublic(
+    """Identifier of the memory to delete."""
+    input: DeleteMemoryPublicInput!
+  ): DeleteMemoryPayload!
+
+  """
+  Create one or more skills (up to 100), each owned by the caller's organization and assigned a system-generated ID. An entry carrying an `externalId` instead fully replaces the caller's skill already matching that `externalId` or `name`, clearing every optional field the entry omits, so a repeated sync of unchanged definitions converges rather than duplicating. Skills are applied independently, so one that fails validation is reported as `INVALID` in its `results` entry without blocking the others.
+  """
+  createSkills(
+    """Skills to create."""
+    input: CreateSkillsInput!
+  ): CreateSkillsPayload!
+
+  """
+  Update one or more skills (up to 100) by `id`, fully replacing each skill's `name`, `instructions`, `description`, and `type`. Skills are applied independently; an entry targeting a read-only Vega library skill, another organization's skill, or a missing skill is reported as `INVALID`.
+  """
+  updateSkills(
+    """Skills to update."""
+    input: UpdateSkillsInput!
+  ): UpdateSkillsPayload!
+
+  """
+  Delete one or more skills (up to 100) by `id`. Skills are deleted independently; an entry targeting a read-only Vega library skill, another organization's skill, or a missing skill is reported as `INVALID`.
+  """
+  deleteSkills(
+    """Skills to delete."""
+    input: DeleteSkillsInput!
+  ): DeleteSkillsPayload!
+}
+
+"""
+Response returned after submitting one or more detections for creation.
+"""
+type CreateDetectionsPayload {
+  """Per-detection outcome entries."""
+  results: [DetectionsResult!]!
+
+  """Aggregate summary for the request."""
+  summary: DetectionsSummary!
+
+  """
+  Business errors in the shared shape. Empty when the request succeeded. This operation still reports its failures in the top-level GraphQL `errors` array, so the list is empty today; new error reporting lands here.
+  """
+  userErrors: [UserError!]!
+}
+
+"""Per-detection outcome entry returned by createDetections."""
+type DetectionsResult {
+  """Detection name from the request."""
+  name: String!
+
+  """Validation status for this detection."""
+  status: DetectionValidationStatus!
+
+  """Validation errors. Empty if the detection is valid."""
+  errors: [DetectionUserError!]!
+
+  """
+  Created detection. Null if the detection is invalid or the transaction was not committed.
+  """
+  detection: DetectionInfo
+}
+
+"""Validation status for an individual detection in a bulk request."""
+enum DetectionValidationStatus {
+  """Detection passed validation."""
+  VALID
+
+  """Detection failed validation."""
+  INVALID
+}
+
+"""A single validation error for a detection request."""
+type DetectionUserError {
+  """Machine-readable error code."""
+  code: String!
+
+  """Human-readable error message."""
+  message: String!
+
+  """
+  Field associated with the error. Null if the error is not field-specific.
+  """
+  field: String
+}
+
+"""Summary of a bulk detections request."""
+type DetectionsSummary {
+  """Total number of detections submitted."""
+  requested: Int!
+
+  """Number of detections that passed validation."""
+  valid: Int!
+
+  """Number of detections that failed validation."""
+  invalid: Int!
+
+  """
+  True only if all detections were valid and the transaction was committed.
+  """
+  committed: Boolean!
+}
+
+"""
+Why a request, or one item of a batch request, was refused. Shared by every mutation payload.
+"""
+type UserError {
+  """Machine-readable reason. Switch on this, not on `message`."""
+  code: UserErrorCode!
+
+  """Human-readable explanation, safe to show to a user."""
+  message: String!
+
+  """
+  Path to the input value the error is about, for example `["widgets", "2", "name"]`. Empty when the error applies to the whole request.
+  """
+  path: [String!]!
+}
+
+"""
+Machine-readable reasons a mutation can refuse a request or one of its items.
+"""
+enum UserErrorCode {
+  """The referenced object does not exist in the organization."""
+  NOT_FOUND
+
+  """An input value is missing, malformed, or outside its documented range."""
+  INVALID_INPUT
+
+  """The caller's roles do not allow this change."""
+  PERMISSION_DENIED
+
+  """
+  The change conflicts with the object's current state, such as a duplicate name.
+  """
+  CONFLICT
+
+  """A documented quota or size limit was exceeded."""
+  LIMIT_EXCEEDED
+}
+
+"""Input for creating one or more detections."""
+input CreateDetectionsInput {
+  """List of detections to create. Minimum 1, maximum 100."""
+  detections: [CreateDetectionInput!]!
+}
+
+"""Definition of a detection to create."""
+input CreateDetectionInput {
+  """
+  Unique identifier for the detection used for programmatic access and detection-as-code workflows. Must match ^[a-z0-9][a-z0-9._-]{0,127}$. Defaults to the system-generated detection ID if not provided.
+  """
+  externalId: String
+
+  """Unique detection name. Must be 1-200 characters."""
+  name: String!
+
+  """Severity level of the detection."""
+  severity: DetectionSeverity!
+
+  """How often the triggering cell runs. Defaults to `5m` when omitted."""
+  frequencyCron: String = "5m"
+
+  """
+  Lookback window, in seconds, used by the triggering cell. Defaults to `300` when omitted.
+  """
+  lookBackSeconds: Int = 300
+
+  """Detection mode. Defaults to `ALERT` when omitted."""
+  mode: DetectionMode = ALERT
+
+  """
+  Lifecycle state to create the detection in. Defaults to `ENABLED` when omitted.
+  """
+  state: DetectionState = ENABLED
+
+  """Detection visibility state. Defaults to `VISIBLE` when omitted."""
+  status: DetectionStatus = VISIBLE
+
+  """Mapped MITRE ATT&CK tactics."""
+  mitreTactics: [String!] = []
+
+  """Mapped MITRE ATT&CK techniques."""
+  mitreTechniques: [String!] = []
+
+  """Human-readable detection logic description."""
+  logicDescription: String!
+
+  """Human-readable attack scenario description."""
+  attackScenario: String!
+
+  """Reference URLs related to the detection."""
+  references: [String!] = []
+
+  """
+  Normalized field names used to suppress duplicate alerts. New events that match an active alert on every listed field update that alert instead of creating a new one. Defaults to no deduplication fields, which groups all matching events into a single alert.
+  """
+  deduplicationFields: [String!] = []
+
+  """
+  Deduplication window, in seconds, during which matching events update the existing alert instead of creating a new one. Defaults to 0 (deduplication disabled).
+  """
+  deduplicationWindowSeconds: Int = 0
+
+  """
+  Ordered list of normalized field names used to extract Actor values from alert results, highest priority first. At most 5 entries. Each entry must be a normalized field available to your organization. Defaults to empty, which uses Vega's per-data-type fallback.
+  """
+  actorFields: [String!] = []
+
+  """
+  Ordered list of normalized field names used to extract Target values from alert results, highest priority first. At most 5 entries. Each entry must be a normalized field available to your organization. Defaults to empty, which uses Vega's per-data-type fallback.
+  """
+  targetFields: [String!] = []
+
+  """Referenced data source IDs."""
+  dataSourcesIds: [ID!] = []
+
+  """Detection tags."""
+  tags: [String!] = []
+
+  """Detection query cells. Minimum 1."""
+  cells: [DetectionCellInput!]!
+
+  """
+  Field name used for event grouping. When set, detection results exceeding the threshold are grouped by this field value.
+  """
+  groupingField: String
+
+  """
+  Number of matches required to activate event grouping. Range 2-100. Defaults to 10.
+  """
+  groupingThreshold: Int = 10
+
+  """
+  Skill IDs to attach to the detection, used when Vega triages the alerts it produces. Each ID must reference a skill that exists and is accessible to your organization, and whose category is `TRIAGE` or `INVESTIGATION`. Omit or pass an empty list to create the detection with no skills. If any ID is invalid, does not exist, or has an unsupported category, the whole request fails and no detections are created. Maximum 20 IDs.
+  """
+  skillIds: [ID!] = []
+}
+
+"""Input for a query cell that is part of a detection."""
+input DetectionCellInput {
+  """Unique name of the cell within the detection. Must not start with `@`."""
+  name: String!
+
+  """Vega KQL query text for the cell."""
+  query: String!
+
+  """
+  Marks this cell as the triggering cell. Exactly one cell per detection must be true.
+  """
+  trigger: Boolean = false
+}
+
+"""Response returned after submitting one or more detections for update."""
+type UpdateDetectionsPayload {
+  """Per-detection validation and update outcomes."""
+  results: [DetectionValidationResult!]!
+
+  """Aggregate summary for the request."""
+  summary: DetectionsSummary!
+
+  """
+  Business errors in the shared shape. Empty when the request succeeded. This operation still reports its failures in the top-level GraphQL `errors` array, so the list is empty today; new error reporting lands here.
+  """
+  userErrors: [UserError!]!
+}
+
+"""Per-detection validation and update outcome."""
+type DetectionValidationResult {
+  """Detection name."""
+  name: String
+
+  """Validation status for this detection."""
+  status: DetectionValidationStatus!
+
+  """List of validation errors. Empty if the detection is valid."""
+  errors: [DetectionUserError!]!
+
+  """
+  Updated detection. Null if validation failed or the transaction was not committed.
+  """
+  detection: DetectionInfo
+}
+
+"""Input for updating one or more detections."""
+input UpdateDetectionsInput {
+  """List of detections to update. Minimum 1, maximum 100."""
+  detections: [UpdateDetectionInput!]!
+}
+
+"""One detection update request."""
+input UpdateDetectionInput {
+  """
+  Detection instance identifier. Provide either detectionId or externalId, not both.
+  """
+  detectionId: ID
+
+  """
+  External identifier for the detection. Provide either detectionId or externalId, not both.
+  """
+  externalId: String
+
+  """Unique detection name."""
+  name: String
+
+  """Severity level of the detection."""
+  severity: DetectionSeverity
+
+  """
+  Lifecycle state of the detection. Accepts `ENABLED`, `DISABLED`, or `TEST_MODE`. The transition is idempotent: if the detection is already in the requested state, no change is made.
+  """
+  state: DetectionState
+
+  """How often the triggering cell runs."""
+  frequencyCron: String
+
+  """Lookback window, in seconds, used by the triggering cell."""
+  lookBackSeconds: Int
+
+  """Detection mode."""
+  mode: DetectionMode
+
+  """
+  Detection visibility state. Reserved for internal use; external callers should omit this field.
+  """
+  status: DetectionStatus
+
+  """Detection tags."""
+  tags: [String!]
+
+  """Mapped MITRE ATT&CK tactics."""
+  mitreTactics: [String!]
+
+  """Mapped MITRE ATT&CK techniques."""
+  mitreTechniques: [String!]
+
+  """Reference URLs related to the detection."""
+  references: [String!]
+
+  """
+  Normalized field names used to suppress duplicate alerts. New events that match an active alert on every listed field update that alert instead of creating a new one. Pass an empty array to clear deduplication fields.
+  """
+  deduplicationFields: [String!]
+
+  """
+  Deduplication window, in seconds, during which matching events update the existing alert instead of creating a new one. Pass 0 to disable deduplication.
+  """
+  deduplicationWindowSeconds: Int
+
+  """
+  Ordered list of normalized field names used to extract Actor values from alert results, highest priority first. At most 5 entries. Each entry must be a normalized field available to your organization. Pass an empty array to clear and fall back to Vega's per-data-type defaults.
+  """
+  actorFields: [String!]
+
+  """
+  Ordered list of normalized field names used to extract Target values from alert results, highest priority first. At most 5 entries. Each entry must be a normalized field available to your organization. Pass an empty array to clear and fall back to Vega's per-data-type defaults.
+  """
+  targetFields: [String!]
+
+  """Human-readable detection logic description."""
+  logicDescription: String
+
+  """Human-readable attack scenario description."""
+  attackScenario: String
+
+  """
+  Full replacement list of detection query cells. Replaces all existing cells when provided.
+  """
+  cells: [DetectionCellInput!]
+
+  """
+  Field name used for event grouping. When set, detection results exceeding the threshold are grouped by this field value.
+  """
+  groupingField: String
+
+  """Number of matches required to activate event grouping. Range 2-100."""
+  groupingThreshold: Int
+
+  """
+  Full replacement list of skill IDs attached to the detection, used when Vega triages the alerts it produces. When provided, it replaces the detection's current skills; pass an empty list to remove all of them. Omit the field to leave the current skills unchanged. Each ID must reference a skill that exists and is accessible to your organization, and whose category is `TRIAGE` or `INVESTIGATION`. If any ID is invalid, does not exist, or has an unsupported category, the whole request fails and no detections are updated. Maximum 20 IDs.
+  """
+  skillIds: [ID!]
+}
+
+"""Response payload returned by the setDetectionsState mutation."""
+type SetDetectionsStatePayload {
+  """IDs of detections that were successfully updated."""
+  ids: [ID!]!
+
+  """
+  Business errors in the shared shape. Empty when the request succeeded. This operation still reports its failures in the top-level GraphQL `errors` array, so the list is empty today; new error reporting lands here.
+  """
+  userErrors: [UserError!]!
+}
+
+"""Top-level input for the setDetectionsState mutation."""
+input SetDetectionsStateInput {
+  """
+  Detection IDs to update. Duplicates are silently deduplicated. IDs that do not exist or have an invalid format are silently skipped. Must contain at least 1 and at most 100 items.
+  """
+  ids: [ID!]!
+
+  """Desired enabled state for all specified detections."""
+  state: DetectionState!
+}
+
+"""Response returned after deleting a detection."""
+type DeleteDetectionPayload {
+  """ID of the deleted detection. Null if the deletion failed."""
+  deletedDetectionId: ID
+
+  """
+  Business errors in the shared shape. Empty when the request succeeded. This operation still reports its failures in the top-level GraphQL `errors` array, so the list is empty today; new error reporting lands here.
+  """
+  userErrors: [UserError!]!
+}
+
+"""Input for deleting an existing detection."""
+input DeleteDetectionInput {
+  """System-generated detection instance ID (UUID)."""
+  detectionInstanceId: ID!
+}
+
+"""Input for creating a new label."""
+input CreateLabelPublicInput {
+  """
+  Display name of the label. Must be unique within the organization. 1-100 characters.
+  """
+  name: String!
+
+  """
+  Color of the label. One of the palette enum names: `PURPLE`, `BLUE`, `GREEN`, `ORANGE`, `RED`, `YELLOW`, `PINK`, `TEAL`, `LIGHT_PURPLE`, `LIGHT_BLUE`, `LIGHT_GREEN`, `LIGHT_ORANGE`, `LIGHT_RED`, `LIGHT_YELLOW`, `LIGHT_PINK`, `LIGHT_TEAL`. Defaults to `RED` if omitted.
+  """
+  color: String
+
+  """
+  Identifier of the category to place the label in. Omit to create an uncategorized label.
+  """
+  categoryId: UUID
+}
+
+"""Input for creating a memory."""
+input CreateMemoryPublicInput {
+  """Short title of the memory. 1-150 characters."""
+  title: String!
+
+  """
+  One-line summary of the memory. Vega agents read it to decide if the memory applies. 1-300 characters, no line breaks.
+  """
+  description: String!
+
+  """Full text of the memory. 1-5000 characters."""
+  content: String!
+
+  """
+  Status of the new memory. Either `ENABLED` or `DISABLED`. Defaults to `ENABLED`.
+  """
+  status: MemoryStatusPublic! = ENABLED
+
+  """
+  Time after which Vega agents stop using the memory, in ISO 8601 format. Must be in the future. Omit for a memory that does not expire.
+  """
+  expiresAt: Time
+
+  """Entities that the memory is about. At most 50 entities."""
+  entities: [MemoryEntityPublicInput!]
+
+  """
+  Identifiers of the labels to attach, as returned by [listLabels](/api-reference/queries/listlabels).
+  """
+  labelIds: [UUID!]
+}
+
+"""An entity to attach to a memory."""
+input MemoryEntityPublicInput {
+  """Type of the entity."""
+  type: MemoryEntityTypePublic!
+
+  """
+  Value of the entity, for example `10.10.10.10`. 1-512 characters. Matching is case-insensitive, and a duplicate of another entity of the same type is dropped.
+  """
+  value: String!
+}
+
+"""Input for changing a memory. Omitted fields keep their current value."""
+input UpdateMemoryPublicInput {
+  """
+  Identifier of the memory to change, as returned in `id` by [getMemories](/api-reference/queries/getmemories).
+  """
+  id: UUID!
+
+  """New title. 1-150 characters."""
+  title: String
+
+  """New one-line summary. 1-300 characters, no line breaks."""
+  description: String
+
+  """New full text. 1-5000 characters."""
+  content: String
+
+  """
+  New status. Either `ENABLED` or `DISABLED`. A memory in `PENDING_REVIEW` or `IGNORED` status cannot be set to `ENABLED`.
+  """
+  status: MemoryStatusPublic
+
+  """
+  New expiration time in ISO 8601 format. A time in the past makes the memory `EXPIRED`. Pass null to remove the expiration.
+  """
+  expiresAt: Time
+
+  """
+  New list of entities. It replaces the current list: include the entities to keep, and pass an empty list to remove all of them. At most 50 entities.
+  """
+  entities: [MemoryEntityPublicInput!]
+
+  """
+  New list of label identifiers, as returned by [listLabels](/api-reference/queries/listlabels). It replaces the current list: include the labels to keep, and pass an empty list to remove all of them.
+  """
+  labelIds: [UUID!]
+}
+
+"""Response returned after a memory is deleted."""
+type DeleteMemoryPayload {
+  """Identifier of the deleted memory."""
+  deletedMemoryId: UUID!
+}
+
+"""Input for deleting a memory."""
+input DeleteMemoryPublicInput {
+  """
+  Identifier of the memory to delete, as returned in `id` by [getMemories](/api-reference/queries/getmemories).
+  """
+  id: UUID!
+}
+
+"""Response returned after submitting one or more skills for creation."""
+type CreateSkillsPayload {
+  """Per-skill outcome entries, in request order."""
+  results: [SkillResult!]!
+
+  """Aggregate summary for the request."""
+  summary: SkillsSummary!
+
+  """
+  Business errors in the shared shape. Empty when the request succeeded. This operation still reports its failures in the top-level GraphQL `errors` array, so the list is empty today; new error reporting lands here.
+  """
+  userErrors: [UserError!]!
+}
+
+"""Per-skill outcome entry returned by createSkills and updateSkills."""
+type SkillResult {
+  """Skill name from the request."""
+  name: String!
+
+  """Outcome status for this skill."""
+  status: SkillValidationStatus!
+
+  """Errors for this skill. Empty when the skill was applied."""
+  errors: [SkillUserError!]!
+
+  """The created or updated skill. Null if the entry failed."""
+  skill: SkillInfo
+}
+
+"""Validation status for an individual skill in a bulk request."""
+enum SkillValidationStatus {
+  """Skill passed validation and the operation was applied."""
+  VALID
+
+  """Skill failed validation or could not be applied."""
+  INVALID
+}
+
+"""A single error for a skill request entry."""
+type SkillUserError {
+  """Machine-readable error code."""
+  code: String!
+
+  """Human-readable error message."""
+  message: String!
+
+  """
+  Field or identifier associated with the error. Null if the error is not field-specific.
+  """
+  field: String
+}
+
+"""Aggregate summary of a bulk skills request."""
+type SkillsSummary {
+  """Total number of skills submitted."""
+  requested: Int!
+
+  """Number of skills that were successfully applied."""
+  succeeded: Int!
+
+  """Number of skills that failed validation or could not be applied."""
+  failed: Int!
+}
+
+"""Input for creating one or more skills."""
+input CreateSkillsInput {
+  """List of skills to create. Minimum 1, maximum 100."""
+  skills: [CreateSkillDefinition!]!
+}
+
+"""Definition of a skill to create."""
+input CreateSkillDefinition {
+  """
+  Stable client-chosen identifier, which must be a UUID unique within the request such as `550e8400-e29b-41d4-a716-446655440000`; a skill the caller owns is replaced when it matches this identifier or the entry's `name`, and a new skill carries it alongside its own system-assigned `id`.
+  """
+  externalId: String
+
+  """Unique skill name. Must be 1-255 characters."""
+  name: String!
+
+  """
+  Instructions that tell the agent how to perform the skill. Must contain at most 500 lines and 500000 characters.
+  """
+  instructions: String!
+
+  """
+  Human-readable description of the skill. Must be at most 5000 characters.
+  """
+  description: String!
+
+  """Category of the skill."""
+  type: SkillType!
+
+  """
+  Up to 50 labels of at most 255 characters each to attach, created in the tenant if missing, matched case-insensitively, and replacing the skill's existing labels.
+  """
+  tags: [String!]
+}
+
+"""Response returned after submitting one or more skills for update."""
+type UpdateSkillsPayload {
+  """Per-skill outcome entries, in request order."""
+  results: [SkillResult!]!
+
+  """Aggregate summary for the request."""
+  summary: SkillsSummary!
+
+  """
+  Business errors in the shared shape. Empty when the request succeeded. This operation still reports its failures in the top-level GraphQL `errors` array, so the list is empty today; new error reporting lands here.
+  """
+  userErrors: [UserError!]!
+}
+
+"""Input for updating one or more skills."""
+input UpdateSkillsInput {
+  """List of skills to update. Minimum 1, maximum 100."""
+  skills: [UpdateSkillDefinition!]!
+}
+
+"""
+Definition of a skill to update. Provided fields fully replace the existing values.
+"""
+input UpdateSkillDefinition {
+  """System-generated identifier of the skill to update."""
+  id: ID!
+
+  """Unique skill name. Must be 1-255 characters."""
+  name: String!
+
+  """
+  Instructions that tell the agent how to perform the skill. Must contain at most 500 lines and 500000 characters.
+  """
+  instructions: String!
+
+  """
+  Human-readable description of the skill. Must be at most 5000 characters.
+  """
+  description: String!
+
+  """Category of the skill."""
+  type: SkillType!
+}
+
+"""Response returned after submitting one or more skills for deletion."""
+type DeleteSkillsPayload {
+  """Per-skill outcome entries, in request order."""
+  results: [SkillDeleteResult!]!
+
+  """Aggregate summary for the request."""
+  summary: SkillsSummary!
+
+  """
+  Business errors in the shared shape. Empty when the request succeeded. This operation still reports its failures in the top-level GraphQL `errors` array, so the list is empty today; new error reporting lands here.
+  """
+  userErrors: [UserError!]!
+}
+
+"""Per-skill outcome entry returned by deleteSkills."""
+type SkillDeleteResult {
+  """Skill identifier from the request."""
+  id: ID!
+
+  """Outcome status for this skill."""
+  status: SkillValidationStatus!
+
+  """Errors for this skill. Empty when the skill was deleted."""
+  errors: [SkillUserError!]!
+}
+
+"""Input for deleting one or more skills."""
+input DeleteSkillsInput {
+  """
+  System-generated identifiers of the skills to delete. Minimum 1, maximum 100.
+  """
+  ids: [ID!]!
+}

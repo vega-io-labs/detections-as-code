@@ -1,7 +1,7 @@
-name: Validate Detection PR
+name: Validate PR
 
-# Runs on every PR that touches detections/.
-# Schema validation runs on every changed YAML. KQL is validated server-side
+# Runs on every PR that touches detections/, skills/ or memories/.
+# Schema validation runs on every changed YAML and SKILL.md. KQL is validated server-side
 # at sync time, not here, so this workflow does not need a tenant secret and
 # also runs cleanly on PRs opened from forks.
 
@@ -10,6 +10,8 @@ on:
     branches: [main]
     paths:
       - 'detections/**'
+      - 'skills/**'
+      - 'memories/**'
       - 'scripts/**'
       - 'tests/**'
       - '.github/workflows/validate.yml'
@@ -33,11 +35,13 @@ jobs:
       - name: Install dependencies
         run: pip install -r requirements.txt
 
-      - name: Validate changed YAMLs
+      - name: Validate changed files
         run: |
           python -m scripts.pr_validate \
             --base-sha "${{ github.event.pull_request.base.sha }}" \
-            --detections-dir ./detections
+            --detections-dir ./detections \
+            --skills-dir ./skills \
+            --memories-dir ./memories
 
   tests:
     runs-on: ubuntu-latest

@@ -97,3 +97,60 @@ REMOVED_FIELDS: dict[str, str] = {
         "'signal' is now 'evidence'"
     ),
 }
+
+
+class MemoryStatus(str, Enum):
+    ENABLED = "ENABLED"
+    DISABLED = "DISABLED"
+
+
+DEFAULT_MEMORY_STATUS: MemoryStatus = MemoryStatus.ENABLED
+
+VALID_MEMORY_STATUSES: frozenset[str] = frozenset(s.value for s in MemoryStatus)
+
+VALID_MEMORY_ENTITY_TYPES: frozenset[str] = frozenset(
+    {"ACCOUNT", "DEVICE", "IP", "DOMAIN"}
+)
+
+MEMORY_MANDATORY_FIELDS: tuple[str, ...] = ("title", "description", "content")
+
+# Memories have no externalId, so the sync recognises the memories it owns by
+# this label and matches each one to its YAML by title. Memories without the
+# label (written in the UI, learned by Vega) are never read, changed or
+# deleted.
+MANAGED_MEMORY_LABEL: str = "detections-as-code"
+MANAGED_MEMORY_LABEL_COLOR: str = "TEAL"
+
+MEMORY_TITLE_MAX_LEN: int = 150
+MEMORY_DESCRIPTION_MAX_LEN: int = 300
+MEMORY_CONTENT_MAX_LEN: int = 5000
+MEMORY_ENTITIES_MAX: int = 50
+MEMORY_ENTITY_VALUE_MAX_LEN: int = 512
+# Shared with the memories people write in the UI and the ones Vega learns, so
+# the repo can hit it before it holds 250 itself. The lint only checks the
+# repo's share.
+MEMORY_TENANT_MAX_ACTIVE: int = 250
+
+
+class SkillType(str, Enum):
+    TRIAGE = "TRIAGE"
+    INVESTIGATION = "INVESTIGATION"
+    TUNING = "TUNING"
+    HUNTING = "HUNTING"
+    EXPLORATION = "EXPLORATION"
+    DETECTION_GENERATION = "DETECTION_GENERATION"
+    MEMORY = "MEMORY"
+
+
+VALID_SKILL_TYPES: frozenset[str] = frozenset(t.value for t in SkillType)
+
+DETECTION_SKILL_TYPES: frozenset[SkillType] = frozenset(
+    {SkillType.TRIAGE, SkillType.INVESTIGATION}
+)
+
+SKILL_FILE_NAME: str = "SKILL.md"
+SKILL_MANDATORY_FIELDS: tuple[str, ...] = ("id", "name", "description", "type")
+SKILL_NAME_MAX_LEN: int = 255
+SKILL_DESCRIPTION_MAX_LEN: int = 5000
+SKILL_INSTRUCTIONS_MAX_CHARS: int = 500_000
+SKILL_INSTRUCTIONS_MAX_LINES: int = 500

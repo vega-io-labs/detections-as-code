@@ -1,8 +1,8 @@
 # Vega Detections (Detection-as-Code)
 
-Manage tenant-custom detections as YAML in a GitHub repository, synced to your Vega tenant.
+Manage tenant-custom detections, skills and memories in a GitHub repository, synced to your Vega tenant.
 
-Detection-as-Code (DaC) moves the authoring surface for tenant-custom detections out of the Vega UI and into a GitHub repository.
+Detection-as-Code (DaC) moves the authoring surface for tenant-custom detections, and for the skills and memories Vega agents use when they triage and investigate, out of the Vega UI and into a GitHub repository.
 
 ## Capabilities
 
@@ -10,13 +10,17 @@ Detection-as-Code (DaC) moves the authoring surface for tenant-custom detections
 - **Reconciling sync on merge.** On merge to `main`, the sync engine diffs every YAML against the current tenant state and submits only the deltas. Unmodified detections are skipped so dynamic schedules are not reset.
 - **Per-detection result reporting.** The reconciler batches API calls in chunks of up to 100 detections and maps each per-detection result back to its YAML, so the run summary names the rule that failed. Each batch is one transaction: an invalid detection rolls back the others in the same chunk, and they are reported as blocked rather than applied. This is what the PR check exists to prevent.
 - **Auditable run summary.** Every sync writes a pass/fail table to the GitHub Actions step summary, with API errors quoted verbatim. Whole-batch failures (API unreachable, tenant outage) are tagged with a `batch API error:` prefix so they read as infrastructure issues rather than detection-level failures.
-- **Two sync workflows.** An automatic sync runs on push to `main`. A manual `Sync ALL detections` workflow supports bulk deployment for initial onboarding or recovery from drift.
+- **Skills as code.** Skills under `skills/`, one `SKILL.md` each, go through the same PR check and the same reconciling sync. Detections in the repository can attach them by the `id` in the file. Skills made in the UI and Vega library skills are never touched. See [Skills](#skills).
+- **Memories as code.** Memories under `memories/` go through the same PR check and the same reconciling sync. The sync only manages the memories it created, marked with a `detections-as-code` label, so memories written in the UI or learned by Vega are never touched. See [Memories](#memories).
+- **Two sync workflows.** An automatic sync runs on push to `main`. A manual `Sync ALL detections, skills and memories` workflow supports bulk deployment for initial onboarding or recovery from drift.
 
 ## Prerequisites
 
 Before adopting Detection-as-Code, ensure the following are in place:
 
 - **GitHub Actions.** The validate and sync workflows shipped under `.github/workflows/` run on GitHub Actions. If your organization standardizes on a different CI/CD platform (GitLab CI, CircleCI, Jenkins, Buildkite, Azure Pipelines, etc.), you will need to port the workflow logic to your tool of choice. The Python sync engine in `scripts/` is platform-agnostic and remains usable as-is.
+- **Agent and label permissions on the access key** (only if you sync skills or memories). Skills need `AgentsWrite`. Memories need `AgentsRead` and `AgentsWrite`, plus `LabelsRead` and `LabelsWrite`: the sync reads the tenant's labels to resolve each file's `labels`, and creates the `detections-as-code` label on first use.
+- **Memories enabled for your organization** (only if you sync memories). Without them, the sync skips an empty `memories/` folder and reports an error when the folder holds memories.
 - **A Vega access key with Administrator role.** Generate it in the Vega UI under **Settings → Access Keys → Create access key**. Save the value when shown — it is displayed only once. Fine-grained permissions are not yet supported.
 
 ## First-time setup
@@ -30,7 +34,7 @@ Before adopting Detection-as-Code, ensure the following are in place:
 
 3. (Optional) Protect the `main` branch:
    - GitHub: Settings → Branches → Add rule for `main`
-   - Require status check: `Validate Detection PR`
+   - Require status check: `validate` (the job in the `Validate PR` workflow)
    - Require pull requests before merging
 
 The workflows target `https://app.vega.io` and are ready to use once the access key is set. No additional tenant configuration is required.
@@ -41,11 +45,11 @@ The workflows target `https://app.vega.io` and are ready to use once the access 
 
 For a typical change:
 
-1. Create a branch off `main`. Add, edit, or remove a YAML under `detections/`.
+1. Create a branch off `main`. Add, edit, or remove a YAML under `detections/` or `memories/`, or a `SKILL.md` under `skills/`.
 2. (Recommended) Run a local dry-run against your tenant - see [Local dry-run](#local-dry-run) below.
-3. Open a pull request. The `Validate Detection PR` check runs schema lint against the changed YAMLs.
+3. Open a pull request. The `Validate PR` check runs schema lint against the changed files.
 4. Review and merge.
-5. The `Sync Detections to Vega` workflow runs on `main`. Review its **Summary** tab for the per-detection result table.
+5. The `Sync Detections, Skills and Memories to Vega` workflow runs on `main`. Review its **Summary** tab for the per-detection, per-skill and per-memory result table.
 6. Open Vega UI -> Detections to confirm the change. Each sync to an existing detection is recorded as a row in the version-history pane.
 
 ## Detection YAML layout
@@ -101,7 +105,7 @@ Operational fields (`state`, `frequencyCron`, `lookBackSeconds`) are required by
 | `groupingThreshold` | int | `10` | Row count in one run that activates burst protection. Range 2-100. Applies with or without `groupingField`. |
 | `actorFields` | list[string] | `[]` | Priority-ordered normalized field names used to extract the alert's Actor, max 5. Empty uses Vega's per-data-type defaults. |
 | `targetFields` | list[string] | `[]` | Priority-ordered normalized field names used to extract the alert's Target, max 5. Empty uses Vega's per-data-type defaults. |
-| `skillIds` | list[string] | `[]` | IDs of `TRIAGE` or `INVESTIGATION` skills Vega loads when triaging this detection's alerts, max 20. The list is authoritative: an empty list detaches skills added in the UI. Must stay empty for `evidence` and `monitor` detections. |
+| `skillIds` | list[string] | `[]` | IDs of `TRIAGE` or `INVESTIGATION` skills Vega loads when triaging this detection's alerts, max 20. For a skill under `skills/`, use the `id` in its `SKILL.md`. The list is authoritative: an empty list detaches skills added in the UI. Must stay empty for `evidence` and `monitor` detections. |
 
 `groupingFields` and `groupingDurationSeconds` were removed from the detection API and are rejected by the sync rather than remapped. `groupingDurationSeconds` becomes `deduplicationWindowSeconds`; `groupingFields` has no single successor and resolves to either `deduplicationFields` or `groupingField` depending on what you meant. See [`docs/fields.md`](docs/fields.md#two-ways-to-reduce-alert-volume).
 
@@ -220,15 +224,110 @@ Four annotated patterns are provided under `docs/`. Copy the file that most clos
 
 For a blank placeholder template (single-cell skeleton), use [`docs/detection.template.yaml`](docs/detection.template.yaml).
 
+## Skills
+
+A skill is a set of instructions Vega agents follow for one kind of work: how to triage a class of alert, how to investigate an incident, how to tune or hunt. Skills live under `skills/`, one folder per skill holding a `SKILL.md`, in any layout:
+
+```
+skills/
+  triage/
+    service-account-sign-in/
+      SKILL.md
+```
+
+> **Copy this** to start a new skill: [`docs/skill.template.md`](docs/skill.template.md). For a worked example see [`docs/example-skill.md`](docs/example-skill.md), and for the full field reference [`docs/skills.md`](docs/skills.md).
+
+```markdown
+---
+id: "8b0f5a3e-2c4d-4e6f-9a1b-3c5d7e9f1a2b"   # a UUID you generate once
+name: "Service Account Sign-In Triage"
+description: "Sign-ins by service accounts from outside their fixed egress range. Use when ..."
+type: "triage"     # triage | investigation | tuning | hunting | exploration | detection_generation | memory
+---
+
+# Triage steps
+
+The instructions, in Markdown, at most 500 lines.
+```
+
+| Field | Required | Notes |
+|---|---|---|
+| `id` | yes | A UUID, generated once (`python3 -c 'import uuid; print(uuid.uuid4())'`). Links the file to its skill in Vega. |
+| `name` | yes | 1-255 characters. A new file named like a skill already in the tenant is blocked, since `createSkills` matches by name and would take that skill over. |
+| `description` | yes | 1-5000 characters. The agent picks skills by name and description, so say when to use it. |
+| `type` | yes | The workflow that loads the skill. Only `triage` and `investigation` skills can be attached to a detection. |
+| body | yes | The instructions: everything after the closing `---`. |
+
+How the sync treats skills:
+
+- **It manages every tenant skill that has an `id` (externalId)**, the same rule as detections. Skills made in the Vega UI have none and Vega library skills are read-only, so neither is ever changed or deleted. A skill another tool created through the API with an `externalId` is deleted unless it has a `SKILL.md` here, so keep one repository per tenant. A new file named like a skill made in the UI is blocked instead of overwriting it.
+- **The `id` is the identity.** Name, description, type and instructions can all change and the skill is updated in place, with its detections still attached.
+- **Detections can use it right away.** Put the skill's `id` in a detection's `skillIds`; the sync swaps in the id Vega assigned. Skills sync before detections, so both can land in one pull request.
+- **Labels stay in the UI.** The sync never sends labels, so the labels you set in Vega are kept.
+- **Deleting the folder deletes the skill** on the next sync (unless `--no-deletes`). Remove its id from detections' `skillIds` in the same pull request; the PR check fails until you do.
+- **A missing `skills/` folder turns skill sync off.** The template does not ship one: create it (`mkdir skills`) with your first skill. An empty folder means "manage zero skills" and deletes any managed skill, so run **Sync ALL** as a dry run before the first merge that adds `skills/`.
+- **Use a fresh UUID for every new skill.** A reused id gets the same tenant id back, so detections that used the old skill would pick it up again until the next sync detaches it.
+
+## Memories
+
+A memory is a note about your environment that Vega agents read when they triage alerts and investigate incidents: known benign activity, the owner of an asset, an accepted risk, a standing instruction. Memories live under `memories/`, one per file, in any subfolder layout:
+
+```
+memories/
+  scanners/
+    vulnerability-scanner.yaml
+  assets/
+    payroll-server-owner.yaml
+  accepted-risks/
+    legacy-ftp-partner.yaml
+```
+
+> **Copy this** to start a new memory: [`docs/memory.template.yaml`](docs/memory.template.yaml). For a worked example see [`docs/example-memory.yaml`](docs/example-memory.yaml), and for the full field reference [`docs/memories.md`](docs/memories.md).
+
+```yaml
+title: "Approved vulnerability scanner scanner-01"
+description: "Weekly authenticated vulnerability scans from scanner-01 (192.0.2.10) are expected and approved."
+content: |-
+  scanner-01 runs authenticated scans every Sunday 02:00-06:00 UTC.
+
+  Not covered, escalate instead:
+  - Any activity from 192.0.2.10 outside the Sunday window.
+status: "enabled"                    # enabled | disabled
+expiresAt: "2027-01-31"              # optional
+entities:                            # optional: account | device | ip | domain
+  - type: ip
+    value: "192.0.2.10"
+labels: []                           # optional: names of labels that exist in your tenant
+```
+
+| Field | Required | Notes |
+|---|---|---|
+| `title` | yes | 1-150 characters, unique across `memories/`. Links the file to its memory in Vega. |
+| `description` | yes | 1-300 characters, one line. Agents read it to decide if the memory applies. |
+| `content` | yes | 1-5000 characters. |
+| `status` | no | `enabled` (default) or `disabled`. |
+| `expiresAt` | no | ISO 8601. Agents stop using the memory after it. |
+| `entities` | no | At most 50 `{type, value}` pairs. |
+| `labels` | no | Label names; they must exist in the tenant. |
+
+How the sync treats memories:
+
+- **It only manages its own memories.** Every memory the sync creates carries the `detections-as-code` label, created on first use. Only labelled memories are updated and deleted, so memories written in the Vega UI and memories Vega learns from analyst verdicts are left alone. A file whose title matches one of those is blocked rather than created a second time.
+- **The title is the identity.** There is no `id` field: a file is matched to the labelled memory with the same title. Changing a title therefore deletes the old memory and creates a new one, with a new `MEM-` id and an empty usage history.
+- **The file is the source of truth.** Every changed field is written, and `entities` and `labels` replace what is attached in the UI. Removing `expiresAt` removes the expiration.
+- **Deleting the file deletes the memory** on the next sync (unless `--no-deletes`). Set `status: "disabled"` to keep it but stop agents from using it.
+- **A missing `memories/` folder turns memory sync off.** Delete the folder if you do not want to manage memories from this repository; an empty folder means "manage zero memories" and removes any memory the sync created earlier.
+- **Each memory is its own API call.** There is no batch call for memories, so one failing memory never blocks another. The sync runs deletes first, then updates, then creates, so freeing room under the tenant's limit of 250 active memories happens before new ones are added.
+
 ## The CI/CD workflows
 
 Three GitHub Actions workflows ship with this template:
 
 | Workflow | File | Trigger | What it does |
 |---|---|---|---|
-| **Validate Detection PR** | `.github/workflows/validate.yml` | Pull request touching `detections/**` or `scripts/**` | Schema lint on each changed YAML. No tenant secret needed; runs cleanly on PRs from forks. |
-| **Sync Detections to Vega** | `.github/workflows/sync.yml` | Push to `main` touching `detections/**` or `scripts/**`. Also `workflow_dispatch`. | Reconciles every YAML against the tenant, batched in chunks of 100. `dry_run` and `no_deletes` inputs available on manual dispatch. |
-| **Sync ALL detections (manual)** | `.github/workflows/sync-all.yml` | Manual (`workflow_dispatch`) only | Same reconcile, but defaults to `dry_run=true` and `no_deletes=true`. Use for first-run bulk deploy or recovery after a partial sync. |
+| **Validate PR** | `.github/workflows/validate.yml` | Pull request touching `detections/**`, `skills/**`, `memories/**` or `scripts/**` | Schema lint on each changed YAML and `SKILL.md`. No tenant secret needed; runs cleanly on PRs from forks. |
+| **Sync Detections, Skills and Memories to Vega** | `.github/workflows/sync.yml` | Push to `main` touching `detections/**`, `skills/**`, `memories/**` or `scripts/**`. Also `workflow_dispatch`. | Reconciles everything against the tenant: skills first, then detections batched in chunks of 100, then memories one call each. `dry_run` and `no_deletes` inputs available on manual dispatch. |
+| **Sync ALL detections, skills and memories (manual)** | `.github/workflows/sync-all.yml` | Manual (`workflow_dispatch`) only | Same reconcile, but defaults to `dry_run=true` and `no_deletes=true`. Use for first-run bulk deploy or recovery after a partial sync. |
 
 Both sync workflows read `VEGA_ACCESS_KEY` and `VEGA_ACCESS_KEY_ID` from the repository secrets. On scope-enabled (ABAC) tenants where the key is bound to multiple scopes, set the `VEGA_SCOPE_ID` repository variable. The tenant URL is `https://app.vega.io`.
 
@@ -237,18 +336,23 @@ Both sync workflows read `VEGA_ACCESS_KEY` and `VEGA_ACCESS_KEY_ID` from the rep
 The sync workflow writes its result to the GitHub Actions **Summary** tab. The header summarises the run at a glance:
 
 ```
-## ✅ Detection sync — 12 ok, 0 failed (creates=2 updates=3 deletes=0 no_op=7)
+## ✅ Vega sync — 13 ok, 0 failed (creates=2 updates=3 deletes=0 no_op=7)
+
+Skills: creates=1 updates=0 deletes=0 blocked=0 no_op=3
+
+Memories: creates=1 updates=0 deletes=0 blocked=0 no_op=4
 ```
 
-Below it is a per-detection table with one row per action (create / update / delete / set_state):
+Below it is one table with a row per action (create / update / delete / set_state). The Id column holds the detection's `externalId`, the skill's `id` or the memory's `MEM-` id:
 
 ```
-┏━━━━┳━━━━━━━━┳━━━━━━━━━━━━━━━━┳━━━━━━━━━━━━━━━━━━━━━┳━━━━━━━━━━━━━━━━━━━┓
-┃ OK ┃ Action ┃ externalId     ┃ Name                ┃ Error             ┃
-┡━━━━╇━━━━━━━━╇━━━━━━━━━━━━━━━━╇━━━━━━━━━━━━━━━━━━━━━╇━━━━━━━━━━━━━━━━━━━┩
-│ ✓  │ create │ tor-login      │ Tor Network Login   │                   │
-│ ✗  │ update │ suspicious-mfa │ Suspicious MFA Push │ severity: invalid │
-└────┴────────┴────────────────┴─────────────────────┴───────────────────┘
+┏━━━━┳━━━━━━━━━━━┳━━━━━━━━┳━━━━━━━━━━━━━━━━┳━━━━━━━━━━━━━━━━━━━━━━━━━━━━┳━━━━━━━━━━━━━━━━━━━┓
+┃ OK ┃ Object    ┃ Action ┃ Id             ┃ Name                       ┃ Error             ┃
+┡━━━━╇━━━━━━━━━━━╇━━━━━━━━╇━━━━━━━━━━━━━━━━╇━━━━━━━━━━━━━━━━━━━━━━━━━━━━╇━━━━━━━━━━━━━━━━━━━┩
+│ ✓  │ detection │ create │ tor-login      │ Tor Network Login          │                   │
+│ ✗  │ detection │ update │ suspicious-mfa │ Suspicious MFA Push        │ severity: invalid │
+│ ✓  │ memory    │ create │ MEM-K7QX2      │ Approved vulnerability ... │                   │
+└────┴───────────┴────────┴────────────────┴────────────────────────────┴───────────────────┘
 ```
 
 - `creates` / `updates` / `deletes` count the actions actually planned.
@@ -286,7 +390,9 @@ python -m scripts.sync \
   --dry-run
 ```
 
-`--dry-run` prints the plan (creates / updates / deletes / no-op skipped) and exits without modifying tenant state. `--no-deletes` permits creates, updates, and state changes but skips the delete step.
+Skills are read from `./skills` and memories from `./memories` by default; pass `--skills-dir` or `--memories-dir` (both repeatable) to point elsewhere. When none of the given folders exists, that kind is skipped.
+
+`--dry-run` prints the plan (creates / updates / deletes / no-op skipped, plus the skill and memory plans) and exits without modifying tenant state. It exits non-zero when anything is blocked, since the real sync would report those as failures. `--no-deletes` permits creates, updates, and state changes but skips the delete step.
 
 ## Disable vs delete vs revert
 
@@ -296,7 +402,9 @@ python -m scripts.sync \
 | Validate a tuning change against production data before promoting | Set `state: "test_mode"` and merge. The resulting alerts are isolated from incident correlation. |
 | Permanently retire a detection | Delete the YAML file. The next sync removes it from the tenant. The `id` remains reserved; any rebuild requires a new UUID. |
 | Roll back a change | `git revert` the offending commit. Reverting a "create" PR removes the detection from the tenant; reverting a "delete" PR fails because the `id` is already reserved - generate a new id instead. |
-| Pause repository-wide syncing | Disable the `Sync Detections to Vega` workflow under repo Settings -> Actions. |
+| Stop agents from using a memory but keep it | Set `status: "disabled"` on the memory and merge. |
+| Remove a memory | Delete its file. Unlike a detection id, a memory title can be reused right away. |
+| Pause repository-wide syncing | Disable the `Sync Detections, Skills and Memories to Vega` workflow under repo Settings -> Actions. |
 
 ## Audit trail
 
@@ -324,6 +432,15 @@ Inside Vega, each merged change appears as a row in the detection's version-hist
 | Validate fails with `cells[i].name ... is duplicated` | Two cells in one detection share a name. | Make cell names unique within the detection. |
 | Validate warns `cells[i].name ... contains characters the API rejects when creating a detection` | Punctuation such as `.` in a cell name. | Harmless for a detection that already exists; rename before merging if it is new, or the create fails and rolls back its batch. |
 | Validate fails with `'groupingFields' is no longer accepted by the detection API` | The YAML predates the removal of the plural grouping fields. | Choose by intent - `deduplicationFields` to fold repeat alerts together across runs, `groupingField` to split one noisy run. `groupingDurationSeconds` becomes `deduplicationWindowSeconds`. The old keys never took effect, so review the value before carrying it over. |
+| Validate fails with `unknown field 'category'` (or `tags`, `version`, `author`) on a skill | The file was copied from a Vega library skill, which carries keys this repository does not sync. | Rename `category` to `type`; remove the others. Labels are set in the Vega UI. |
+| Validate fails with `'id' must be a UUID` on a skill | The skill's `id` is missing or not a UUID. | Generate one with `python3 -c 'import uuid; print(uuid.uuid4())'`. |
+| Validate fails with `duplicate id` or `duplicate name` on a skill | Two `SKILL.md` files share an id (often a copied file) or a name. | Give the copy a new id and a distinct name. |
+| Validate fails with `name the file SKILL.md exactly` | A skill file is named `skill.md` or similar. | Rename it to `SKILL.md`; the sync reads no other name. |
+| Validate fails with `'skillIds' names skill ..., whose ... this PR deletes` | The PR deletes a `SKILL.md` that a detection still uses. | Remove the id from that detection's `skillIds` in the same PR. |
+| Validate fails with `only triage and investigation skills can be attached` | A detection's `skillIds` names a repository skill of another type. | Attach a triage or investigation skill, or change the skill's `type`. |
+| Validate fails with `duplicate title` on a memory | Two files under `memories/` share a title, which is the memory's identity. | Make the titles unique. |
+| Validate fails with `unknown field 'enabled'` (or `name`, `id`) on a memory | The memory schema uses `status`, `title`, and has no id. | Rename the key as the message says. |
+| Validate warns `'expiresAt' ... is in the past` | The memory has expired. | Delete the file, or move the date forward. A new memory with a past date fails the sync. |
 | Validate fails with `'lookBackSeconds' must be >= the Ns 'frequencyCron' interval` | The lookback window is shorter than the schedule, which would skip data between runs. | Raise `lookBackSeconds` to at least the interval, or shorten `frequencyCron`. |
 
 ### Sync at merge time
@@ -339,6 +456,14 @@ Inside Vega, each merged change appears as a row in the detection's version-hist
 | Login succeeds but every query fails with 403 `NO_SCOPE_FOR_ACCESS_KEY` or `SCOPE_SELECTION_REQUIRED` | The tenant has scopes (ABAC) enabled and the access key has zero or multiple scope bindings. | Bind the key to exactly one scope, or set the `VEGA_SCOPE_ID` repository variable to the scope UUID the sync should use. |
 | Every query fails with 403 `SCOPE_SELECTION_REQUIRED` — `Invalid X-Vega-Scope header value` | `VEGA_SCOPE_ID` is set but is not a UUID. | Copy the scope's UUID exactly; a name or a truncated id is rejected before any permission check. |
 | Every query fails with 403 `ACCESS_DENIED` right after setting `VEGA_SCOPE_ID` | The UUID is well-formed but the access key has no binding to that scope. | Point `VEGA_SCOPE_ID` at a scope the key is actually bound to, or add the binding to the key. |
+| A skill fails with `the name ... is already used by a skill this repo does not manage` | A skill with that name was made in the Vega UI. Syncing would overwrite it. | Rename the `SKILL.md` skill, or rename or delete the UI skill. |
+| Every skill fails with `ACCESS_DENIED ... AgentsWrite` | The access key cannot write skills. | Give the key the `AgentsWrite` permission, or remove the `skills/` folder to stop syncing skills. |
+| A detection fails with `skillIds names skill(s) ... that are not in the tenant` | A skill it uses failed to sync in the same run, so the detection was held back. | Fix the skill's error; the detection syncs on the next run. |
+| A detection fails because a skill id does not exist | Its `skillIds` names a skill whose `SKILL.md` was deleted, or a mistyped id. | Remove the id from `skillIds`. |
+| Sync fails with `memories are not available to this access key` | Memories are not enabled for your organization, or the key lacks `AgentsRead` or `LabelsRead`. | Ask Vega to enable memories, or remove the `memories/` folder to stop syncing them. |
+| A memory fails with `label(s) not found in the tenant` | A name under `labels` does not exist yet. | Create the label in the Vega UI, or remove it from the file. |
+| A memory fails with `MEMORY_LIMIT_REACHED` | The tenant would pass 250 active memories. The count includes memories written in the UI and learned by Vega. | Disable or delete memories you no longer need, in the repository or the UI, then re-run. |
+| A memory fails with `a memory with this title already exists without the 'detections-as-code' label` | Someone removed the label in the UI, or wrote a memory with the same title there. The sync no longer manages it and will not create a duplicate. | Add the `detections-as-code` label back to that memory in the UI to hand it to the sync, or delete it. |
 | A chunk of detections all fail with the same `batch API error: ...` line | The API was unreachable or returned a transport error for that batch. | Re-run the workflow. Transient transport errors clear on retry; the next run is idempotent (no-op updates are skipped). |
 | Sync reports failures stating the detection already exists, yet the rule is visible in the UI | The first attempt landed on Vega but the response was lost in transit; the retry encountered a duplicate. | The detection is healthy. Re-run the workflow; the next pass records it as a no-op. |
 
@@ -360,8 +485,10 @@ Canonical Vega platform documentation:
 ## Limitations (v1)
 
 - **Custom detections only.** This template manages tenant-custom detections authored as YAML in this repository. Vega's built-in library detections are not in scope; manage those through the Vega UI. The sync never deletes a library detection, even though the API lists them next to the custom ones.
-- **No drift detection.** The sync workflow runs on pushes to `main` that touch `detections/**` or `scripts/**`, and on manual dispatch. Changes made to a synced detection through the Vega UI between repository syncs persist silently and are reverted to the YAML state on the next sync. There is no warning, alert, or reconciliation report for UI-side edits. Treat the repository as the single source of truth, and run the **Sync ALL detections** workflow periodically to force-reconcile if UI edits are suspected.
+- **No drift detection.** The sync workflow runs on pushes to `main` that touch `detections/**`, `skills/**`, `memories/**` or `scripts/**`, and on manual dispatch. Changes made to a synced detection through the Vega UI between repository syncs persist silently and are reverted to the YAML state on the next sync. There is no warning, alert, or reconciliation report for UI-side edits. Treat the repository as the single source of truth, and run the **Sync ALL detections, skills and memories** workflow periodically to force-reconcile if UI edits are suspected.
 - Lookups and data sources must already exist in the tenant.
 - A merge that fails partway through leaves the tenant in a partially-applied state. Re-running the workflow after fixing the offending YAML converges (idempotent).
 - The Access Key currently requires **Administrator** role; fine-grained scoping is not yet supported.
 - `deleteDetection` is a single-detection API; deletes run one rule at a time. Creates and updates batch in chunks of 100.
+- Skills sync the `SKILL.md` body only; other files in a skill's folder are not uploaded. Skill labels are managed in the Vega UI. Vega library skills are read-only: clone one in the UI to change it.
+- Memories are matched by title, so renaming one replaces it and resets its usage history. Memories Vega proposes for review (pending review) are not managed here; approve or ignore them in the UI.

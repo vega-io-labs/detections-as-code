@@ -1,7 +1,6 @@
-"""GraphQL client for the Vega Detection API.
+"""GraphQL client for the Vega detection, skill, memory and label APIs.
 
-Authenticates via `login_machine` -> JWT, executes detection mutations and
-queries, and retries transient transport errors via tenacity. GraphQL-level
+Authenticates via `login_machine` -> JWT, executes the mutations and queries, and retries transient transport errors via tenacity. GraphQL-level
 errors (TransportQueryError) are user-visible and never retried.
 """
 
@@ -25,16 +24,78 @@ from tenacity import (
 )
 
 DEFAULT_TENANT_URL = "https://app.vega.io"
-DEFAULT_PAGE_SIZE = 100  # server cap, not a preference: >100 fails the request
 DEFAULT_TIMEOUT_S = 60
 MAX_RETRIES = 3
 RETRY_BASE_DELAY_S = 1.0
 MAX_ERROR_TEXT_CHARS = 500
-MAX_PAGES = 1000  # pagination loop safety; >100k detections is implausible
+MAX_PAGES = 1000  # pagination loop safety; >100k objects is implausible
+# Server caps, not preferences: a larger page fails the request.
+DETECTION_PAGE_SIZE = 100
+MEMORY_PAGE_SIZE = 500
+SKILL_PAGE_SIZE = 100
+
+ACCESS_DENIED = "ACCESS_DENIED"
+MEMORY_LIMIT_REACHED = "MEMORY_LIMIT_REACHED"
+LABELS_LABEL_NOT_FOUND = "LABELS_LABEL_NOT_FOUND"
+
+_MEMORY_FRAGMENT = """
+fragment MemoryFields on MemoryInfo {
+  id
+  vegaMemoryId
+  title
+  description
+  content
+  status
+  enabled
+  expiresAt
+  entities { type value }
+  labels { id name }
+}
+"""
+
+_SKILL_RESULT_FRAGMENT = """
+fragment SkillResultFields on SkillResult {
+  name
+  status
+  errors { code message field }
+  skill { id externalId }
+}
+"""
+
+
+_ERROR_HINTS: dict[str, str] = {
+    MEMORY_LIMIT_REACHED: (
+        "the tenant would pass its cap on active memories, which also counts "
+        "the memories written in the UI and learned by Vega"
+    ),
+    LABELS_LABEL_NOT_FOUND: (
+        "a label in the file was deleted from the tenant during the run; "
+        "re-run the sync"
+    ),
+}
 
 
 class VegaAPIError(RuntimeError):
-    pass
+    def __init__(
+        self,
+        message: str,
+        errors: list[dict[str, Any]] | None = None,
+        permission: str | None = None,
+    ) -> None:
+        self.errors = errors or []
+        hints = [_ERROR_HINTS[c] for c in sorted(self.codes) if c in _ERROR_HINTS]
+        if permission and ACCESS_DENIED in self.codes:
+            hints.append(f"the access key needs the {permission} permission")
+        super().__init__("; ".join([message, *hints]))
+
+    @property
+    def codes(self) -> frozenset[str]:
+        raw = (
+            (e.get("extensions") or {}).get("error_code_name")
+            for e in self.errors
+            if isinstance(e, dict)
+        )
+        return frozenset(code for code in raw if isinstance(code, str))
 
 
 def _retriable(exc: BaseException) -> bool:
@@ -150,7 +211,10 @@ class VegaClient:
         return client.execute(gql(query_str), variable_values=variables)
 
     def _execute(
-        self, query_str: str, variables: dict[str, Any]
+        self,
+        query_str: str,
+        variables: dict[str, Any],
+        permission: str | None = None,
     ) -> dict[str, Any]:
         if self._client is None:
             raise RuntimeError(
@@ -159,16 +223,42 @@ class VegaClient:
         try:
             return self._execute_raw(self._client, query_str, variables)
         except TransportQueryError as e:
-            raise VegaAPIError(f"GraphQL errors: {e.errors}") from e
+            raise VegaAPIError(
+                f"GraphQL errors: {e.errors}", e.errors, permission
+            ) from e
         except (TransportError, requests.exceptions.RequestException) as e:
             raise VegaAPIError(
                 f"GraphQL request failed: {type(e).__name__}: "
                 f"{str(e)[:MAX_ERROR_TEXT_CHARS]}"
             ) from e
 
-    def get_detections(
-        self, page_size: int = DEFAULT_PAGE_SIZE
+    def _paginate(
+        self,
+        query: str,
+        root: str,
+        items_key: str,
+        variables: dict[str, Any],
+        page_size: int,
+        permission: str | None = None,
     ) -> list[dict[str, Any]]:
+        items: list[dict[str, Any]] = []
+        offset = 0
+        for _ in range(MAX_PAGES):
+            page = self._execute(
+                query,
+                {**variables, "limit": page_size, "offset": offset},
+                permission,
+            )[root]
+            items.extend(page[items_key])
+            offset += len(page[items_key])
+            if offset >= page["total"] or not page[items_key]:
+                return items
+        raise VegaAPIError(
+            f"{root} pagination exceeded {MAX_PAGES} pages "
+            f"(over {MAX_PAGES * page_size} items); something is off"
+        )
+
+    def get_detections(self) -> list[dict[str, Any]]:
         query = """
         query GetDetections($limit: Int!, $offset: Int!) {
           getDetections(limit: $limit, offset: $offset) {
@@ -197,23 +287,11 @@ class VegaClient:
               cells { name query trigger }
             }
             total
-            limit
-            offset
           }
         }
         """
-        all_detections: list[dict[str, Any]] = []
-        offset = 0
-        for _ in range(MAX_PAGES):
-            data = self._execute(query, {"limit": page_size, "offset": offset})
-            page = data["getDetections"]
-            all_detections.extend(page["detections"])
-            offset += len(page["detections"])
-            if offset >= page["total"] or not page["detections"]:
-                return all_detections
-        raise VegaAPIError(
-            f"get_detections pagination exceeded {MAX_PAGES} pages "
-            f"(over {MAX_PAGES * page_size} detections); something is off"
+        return self._paginate(
+            query, "getDetections", "detections", {}, DETECTION_PAGE_SIZE
         )
 
     def create_detections(
@@ -277,3 +355,139 @@ class VegaClient:
         return self._execute(
             query, {"input": {"detectionInstanceId": detection_id}}
         )["deleteDetection"]
+
+    def get_memories(self) -> list[dict[str, Any]]:
+        query = """
+        query GetMemories(
+          $sortBy: MemorySortFieldPublic!
+          $sortOrder: SortOrderPublic!
+          $limit: Int!
+          $offset: Int!
+        ) {
+          getMemories(
+            sortBy: $sortBy
+            sortOrder: $sortOrder
+            limit: $limit
+            offset: $offset
+          ) {
+            memories { ...MemoryFields }
+            total
+          }
+        }
+        """ + _MEMORY_FRAGMENT
+        return self._paginate(
+            query,
+            "getMemories",
+            "memories",
+            {"sortBy": "UPDATED_AT", "sortOrder": "DESC"},
+            MEMORY_PAGE_SIZE,
+            "AgentsRead",
+        )
+
+    def create_memory(self, memory: dict[str, Any]) -> dict[str, Any]:
+        query = """
+        mutation CreateMemory($input: CreateMemoryPublicInput!) {
+          createMemoryPublic(input: $input) { ...MemoryFields }
+        }
+        """ + _MEMORY_FRAGMENT
+        return self._execute(query, {"input": memory}, "AgentsWrite")[
+            "createMemoryPublic"
+        ]
+
+    def update_memory(self, memory: dict[str, Any]) -> dict[str, Any]:
+        query = """
+        mutation UpdateMemory($input: UpdateMemoryPublicInput!) {
+          updateMemoryPublic(input: $input) { ...MemoryFields }
+        }
+        """ + _MEMORY_FRAGMENT
+        return self._execute(query, {"input": memory}, "AgentsWrite")[
+            "updateMemoryPublic"
+        ]
+
+    def delete_memory(self, memory_id: str) -> dict[str, Any]:
+        query = """
+        mutation DeleteMemory($input: DeleteMemoryPublicInput!) {
+          deleteMemoryPublic(input: $input) { deletedMemoryId }
+        }
+        """
+        return self._execute(
+            query, {"input": {"id": memory_id}}, "AgentsWrite"
+        )["deleteMemoryPublic"]
+
+    def list_labels(self) -> list[dict[str, Any]]:
+        query = """
+        query ListLabels {
+          listLabels { id name }
+        }
+        """
+        return self._execute(query, {}, "LabelsRead")["listLabels"]
+
+    def create_label(self, name: str, color: str) -> dict[str, Any]:
+        query = """
+        mutation CreateLabel($input: CreateLabelPublicInput!) {
+          createLabelPublic(input: $input) { id name }
+        }
+        """
+        return self._execute(
+            query, {"input": {"name": name, "color": color}}, "LabelsWrite"
+        )["createLabelPublic"]
+
+    def get_skills(self) -> list[dict[str, Any]]:
+        query = """
+        query GetSkills($limit: Int!, $offset: Int!) {
+          getSkills(limit: $limit, offset: $offset) {
+            skills {
+              id
+              externalId
+              name
+              description
+              type
+              instructions
+              readOnly
+            }
+            total
+          }
+        }
+        """
+        return self._paginate(
+            query, "getSkills", "skills", {}, SKILL_PAGE_SIZE, "QueryRead"
+        )
+
+    def create_skills(self, skills: list[dict[str, Any]]) -> dict[str, Any]:
+        query = """
+        mutation CreateSkills($input: CreateSkillsInput!) {
+          createSkills(input: $input) {
+            results { ...SkillResultFields }
+            summary { requested succeeded failed }
+          }
+        }
+        """ + _SKILL_RESULT_FRAGMENT
+        return self._execute(
+            query, {"input": {"skills": skills}}, "AgentsWrite"
+        )["createSkills"]
+
+    def update_skills(self, skills: list[dict[str, Any]]) -> dict[str, Any]:
+        query = """
+        mutation UpdateSkills($input: UpdateSkillsInput!) {
+          updateSkills(input: $input) {
+            results { ...SkillResultFields }
+            summary { requested succeeded failed }
+          }
+        }
+        """ + _SKILL_RESULT_FRAGMENT
+        return self._execute(
+            query, {"input": {"skills": skills}}, "AgentsWrite"
+        )["updateSkills"]
+
+    def delete_skills(self, skill_ids: list[str]) -> dict[str, Any]:
+        query = """
+        mutation DeleteSkills($input: DeleteSkillsInput!) {
+          deleteSkills(input: $input) {
+            results { id status errors { code message field } }
+            summary { requested succeeded failed }
+          }
+        }
+        """
+        return self._execute(
+            query, {"input": {"ids": skill_ids}}, "AgentsWrite"
+        )["deleteSkills"]
