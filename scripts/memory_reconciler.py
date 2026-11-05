@@ -63,7 +63,7 @@ class MemoryState:
 
 
 @dataclass
-class _TenantMemories:
+class TenantMemories:
     managed: dict[str, dict[str, Any]] = field(default_factory=dict)
     unmanaged: dict[str, dict[str, Any]] = field(default_factory=dict)
     stale: list[dict[str, Any]] = field(default_factory=list)
@@ -105,7 +105,7 @@ def _vega_entities(vega: dict[str, Any]) -> set[tuple[str, str]]:
     }
 
 
-def _is_no_op(
+def is_no_op(
     spec: MemorySpec, vega: dict[str, Any], label_ids: list[str]
 ) -> bool:
     if spec.description != (vega.get("description") or "").strip():
@@ -135,10 +135,10 @@ def _title(vega: dict[str, Any]) -> str:
     return (vega.get("title") or "").strip()
 
 
-def _index_by_title(
+def index_by_title(
     vega_memories: list[dict[str, Any]], managed_label_id: str | None
-) -> _TenantMemories:
-    tenant = _TenantMemories()
+) -> TenantMemories:
+    tenant = TenantMemories()
     for vmem in vega_memories:
         title = _title(vmem)
         if not _has_label(vmem, managed_label_id):
@@ -200,7 +200,7 @@ def _blocked(
 def _plan_memory(
     plan: MemoryPlan,
     spec: MemorySpec,
-    tenant: _TenantMemories,
+    tenant: TenantMemories,
     label_ids: dict[str, str],
 ) -> None:
     current = tenant.managed.get(spec.title)
@@ -221,7 +221,7 @@ def _plan_memory(
         ids.append(plan.managed_label_id)
     if current is None:
         plan.creates.append(Planned("", spec.title, to_create_input(spec, ids)))
-    elif _is_no_op(spec, current, ids):
+    elif is_no_op(spec, current, ids):
         plan.no_op_updates += 1
     else:
         plan.updates.append(
@@ -240,7 +240,7 @@ def build_memory_plan(
 ) -> MemoryPlan:
     label_ids = label_ids_by_name(labels)
     plan = MemoryPlan(managed_label_id=label_ids.get(MANAGED_MEMORY_LABEL))
-    tenant = _index_by_title(vega_memories, plan.managed_label_id)
+    tenant = index_by_title(vega_memories, plan.managed_label_id)
     for spec in specs:
         _plan_memory(plan, spec, tenant, label_ids)
 

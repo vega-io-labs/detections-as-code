@@ -94,7 +94,7 @@ _UPDATE_DIFF_UNCLEARABLE_FIELDS = (
 )
 
 
-def _frequency_equal(yaml_value: str, vega_value: str | None) -> bool:
+def frequency_equal(yaml_value: str, vega_value: str | None) -> bool:
     # A fixed interval is stored as `@every <expr>`, so `60m` reads back as
     # `@every 60m`. Compare the resolved interval where possible so `1h` and
     # `60m` also count as equal; fall back to the literal text for cron
@@ -122,7 +122,7 @@ def _frequency_equal(yaml_value: str, vega_value: str | None) -> bool:
 _CELL_REFERENCE_RE = re.compile(r"@cells:[A-Za-z0-9_-]+/")
 
 
-def _normalise_cell_query(query: str | None) -> str:
+def normalise_cell_query(query: str | None) -> str:
     return _CELL_REFERENCE_RE.sub("@", (query or "").strip())
 
 
@@ -136,7 +136,7 @@ def _cells_equal(yaml_cells: list, vega_cells: list | None) -> bool:
     for a, b in zip(yk, vk):
         if a.get("name") != b.get("name"):
             return False
-        if _normalise_cell_query(a.get("query")) != _normalise_cell_query(
+        if normalise_cell_query(a.get("query")) != normalise_cell_query(
             b.get("query")
         ):
             return False
@@ -145,7 +145,7 @@ def _cells_equal(yaml_cells: list, vega_cells: list | None) -> bool:
     return True
 
 
-def _is_no_op_update(
+def is_no_op_update(
     payload: dict[str, Any], vega_state: dict[str, Any]
 ) -> bool:
     for f in _UPDATE_DIFF_FIELDS:
@@ -171,7 +171,7 @@ def _is_no_op_update(
     for f in _UPDATE_DIFF_UNCLEARABLE_FIELDS:
         if f in payload and payload[f] != vega_state.get(f):
             return False
-    if not _frequency_equal(
+    if not frequency_equal(
         payload.get("frequencyCron", ""), vega_state.get("frequencyCron")
     ):
         return False
@@ -194,7 +194,7 @@ def build_plan(
     for ext_id, ydet in yaml_by_id.items():
         if ext_id in vega_by_external_id:
             update_payload = yaml_to_update_input(ydet)
-            if _is_no_op_update(update_payload, vega_by_external_id[ext_id]):
+            if is_no_op_update(update_payload, vega_by_external_id[ext_id]):
                 plan.no_op_updates += 1
                 continue
             plan.updates.append(_planned(update_payload))
@@ -205,7 +205,7 @@ def build_plan(
                 plan.create_state_overrides[ext_id] = desired_state
 
     for ext_id, vdet in vega_by_external_id.items():
-        if ext_id not in yaml_by_id and not _is_library(vdet):
+        if ext_id not in yaml_by_id and not is_library(vdet):
             plan.deletes.append(
                 Planned(ext_id, vdet.get("name") or "<unknown>", vdet["id"])
             )
@@ -213,7 +213,7 @@ def build_plan(
     return plan
 
 
-def _is_library(vega_detection: dict[str, Any]) -> bool:
+def is_library(vega_detection: dict[str, Any]) -> bool:
     created_by = vega_detection.get("createdBy") or {}
     return created_by.get("principalType") == "vega_library"
 

@@ -68,7 +68,7 @@ def managed_skills(vega_skills: list[dict[str, Any]]) -> list[dict[str, Any]]:
     ]
 
 
-def _is_no_op(spec: SkillSpec, vega: dict[str, Any]) -> bool:
+def is_no_op(spec: SkillSpec, vega: dict[str, Any]) -> bool:
     return (
         spec.name == (vega.get("name") or "").strip()
         and spec.description == (vega.get("description") or "").strip()
@@ -134,7 +134,7 @@ def _plan_skill(
         plan.creates.append(
             Planned(spec.external_id, spec.name, to_create_input(spec))
         )
-    elif _is_no_op(spec, current):
+    elif is_no_op(spec, current):
         plan.no_op_updates += 1
     else:
         plan.updates.append(
