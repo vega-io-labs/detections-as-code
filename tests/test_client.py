@@ -86,13 +86,17 @@ def _call_every_method(client: VegaClient) -> None:
     client.create_skills([skill_create_input(skill)])
     client.update_skills([skill_update_input(skill, "s1")])
     client.delete_skills(["s1"])
+    client.run_federated_query("@CloudTrail | take 1", "PT15M", 120)
+    client.run_federated_query("@CloudTrail | take 1", "PT15M")
+    client.federated_query_status("q1")
+    client.cancel_federated_query("q1")
 
 
 def test_every_document_and_payload_matches_the_public_schema():
     gql_client = FakeGqlClient(pages={"getDetections": [], "getMemories": [], "getSkills": []})
     _call_every_method(_client(gql_client))
 
-    assert len(gql_client.sent) == 16
+    assert len(gql_client.sent) == 20
     for document, variables in gql_client.sent:
         root = _root_field(document)
         assert validate(SCHEMA, document) == [], root
@@ -160,6 +164,7 @@ def test_a_message_that_mentions_a_code_carries_no_code():
         (lambda c: c.create_label("detections-as-code", "TEAL"), "LabelsWrite"),
         (lambda c: c.create_skills([]), "AgentsWrite"),
         (lambda c: c.get_memories(), "AgentsRead"),
+        (lambda c: c.run_federated_query("@CloudTrail", "PT15M"), "QueryRead"),
     ],
 )
 def test_access_denied_names_the_permission_the_call_needs(call, permission):

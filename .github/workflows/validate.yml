@@ -1,9 +1,10 @@
 name: Validate PR
 
 # Runs on every PR that touches detections/, skills/ or memories/.
-# Schema validation runs on every changed YAML and SKILL.md. KQL is validated server-side
-# at sync time, not here, so this workflow does not need a tenant secret and
-# also runs cleanly on PRs opened from forks.
+# Schema validation runs on every changed YAML and SKILL.md and needs no
+# secret. The kql job runs every cell of the changed detections on the tenant
+# with the sync's access key; on a PR from a fork, which gets no secrets, it
+# says so and passes.
 
 on:
   pull_request:
@@ -57,3 +58,38 @@ jobs:
 
       - name: Run the sync engine tests
         run: python -m pytest -q tests
+
+  kql:
+    runs-on: ubuntu-latest
+    # A new push makes the previous run's answer stale; stop spending tenant
+    # queries on it.
+    concurrency:
+      group: kql-${{ github.event.pull_request.number }}
+      cancel-in-progress: true
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          fetch-depth: 0  # need full history to diff vs base
+
+      - uses: actions/setup-python@v6
+        with:
+          python-version: '3.14'
+
+      - name: Install dependencies
+        run: pip install -r requirements.txt
+
+      - name: Run the changed detections' KQL on the tenant
+        env:
+          VEGA_ACCESS_KEY: ${{ secrets.VEGA_ACCESS_KEY }}
+          VEGA_ACCESS_KEY_ID: ${{ secrets.VEGA_ACCESS_KEY_ID }}
+          VEGA_SCOPE_ID: ${{ vars.VEGA_SCOPE_ID }}
+          VEGA_TENANT_URL: ${{ vars.VEGA_TENANT_URL || 'https://app.vega.io' }}
+        run: |
+          if [ -z "$VEGA_ACCESS_KEY" ]; then
+            echo "::notice title=KQL check::Not run: VEGA_ACCESS_KEY is not available to this run (pull requests from forks get no secrets)."
+            echo "## ⏭️ KQL not checked: no VEGA_ACCESS_KEY in this run" >> "$GITHUB_STEP_SUMMARY"
+            exit 0
+          fi
+          python -m scripts.kql_validate \
+            --base-sha "${{ github.event.pull_request.base.sha }}" \
+            --detections-dir ./detections

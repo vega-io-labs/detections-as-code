@@ -1,4 +1,4 @@
-"""GraphQL client for the Vega detection, skill, memory and label APIs.
+"""GraphQL client for the Vega detection, skill, memory, label and query APIs.
 
 Authenticates via `login_machine` -> JWT, executes the mutations and queries, and retries transient transport errors via tenacity. GraphQL-level
 errors (TransportQueryError) are user-visible and never retried.
@@ -491,3 +491,49 @@ class VegaClient:
         return self._execute(
             query, {"input": {"ids": skill_ids}}, "AgentsWrite"
         )["deleteSkills"]
+
+    def run_federated_query(
+        self, query: str, timeframe: str, timeout_s: int | None = None
+    ) -> dict[str, Any]:
+        document = """
+        mutation RunFederatedQuery(
+          $query: String!, $timeframe: String!, $queryTimeout: Int
+        ) {
+          runFederatedQuery(
+            query: $query, timeframe: $timeframe, queryTimeout: $queryTimeout
+          ) {
+            queryId
+            state
+            error
+          }
+        }
+        """
+        return self._execute(
+            document,
+            {"query": query, "timeframe": timeframe, "queryTimeout": timeout_s},
+            "QueryRead",
+        )["runFederatedQuery"]
+
+    def federated_query_status(self, query_id: str) -> dict[str, Any] | None:
+        document = """
+        query FederatedQueryStatus($queryId: String!) {
+          federatedQueryStatus(queryId: $queryId) {
+            queryId
+            state
+            error
+          }
+        }
+        """
+        return self._execute(
+            document, {"queryId": query_id}, "QueryRead"
+        )["federatedQueryStatus"]
+
+    def cancel_federated_query(self, query_id: str) -> str:
+        document = """
+        mutation CancelFederatedQuery($queryId: String!) {
+          cancelFederatedQuery(queryId: $queryId)
+        }
+        """
+        return self._execute(
+            document, {"queryId": query_id}, "QueryRead"
+        )["cancelFederatedQuery"]

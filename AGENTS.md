@@ -68,11 +68,15 @@ For memories it rejects missing or over-long `title` / `description` / `content`
 
 It warns without failing on rules the API only applies to new detections, currently cell names outside `[A-Za-z0-9 _-]`. The check has no tenant access and cannot tell a create from an update.
 
-KQL is validated server-side at sync time by the `createDetections` /
-`updateDetections` mutation. Invalid KQL surfaces in the post-merge sync
-run's step summary, with the API error quoted verbatim. The PR-time
-check is intentionally fast and requires no tenant secret, so pull
-requests opened from forks validate under the same rules.
+KQL is checked at PR time by `scripts/kql_validate.py` (the `kql` job of
+`Validate PR`): each cell of a changed detection runs through
+`runFederatedQuery`, with the cells it references inlined as `let`
+statements, because the API resolves `@cells:` references only to cells
+already saved in the tenant. Keep the cell under test the final statement:
+the engine reports an error inside a `let` body at the wrong line. The
+server-side check at sync time compiles only the trigger cell and lets an
+unknown data source through. The schema check needs no secret; the KQL check
+is skipped on PRs from forks.
 
 ## Authoring rules of thumb
 
