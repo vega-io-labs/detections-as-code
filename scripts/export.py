@@ -16,8 +16,9 @@ from __future__ import annotations
 
 import io
 import re
+from collections import Counter
 from datetime import datetime, timezone
-from typing import Any, Callable, Iterable
+from typing import Any, Callable
 
 import yaml
 from ruamel.yaml import YAML
@@ -125,30 +126,53 @@ def _frequency(vega_value: str | None, previous: Any) -> str:
     return f"{hours}h{minutes}m" if hours else f"{minutes}m"
 
 
-def _same_multiset(a: Iterable[Any], b: Iterable[Any]) -> bool:
-    return sorted(map(str, a)) == sorted(map(str, b))
-
-
-def _same_set(a: Iterable[Any], b: Iterable[Any]) -> bool:
-    return set(map(str, a)) == set(map(str, b))
-
-
 def _keep_order(
-    values: list[Any],
-    previous: Any,
-    same: Callable[[Iterable[Any], Iterable[Any]], bool] = _same_multiset,
+    values: list[Any], previous: Any, key: Callable[[Any], Any] = str
 ) -> list[Any]:
-    """The file's own list when the forward sync already reads it as equal."""
-    if isinstance(previous, list) and same(values, previous):
-        return list(previous)
-    return values
+    """`values` in the file's order: items the file already has stay where
+    they are, as the file spells them, and new ones are appended."""
+    if not isinstance(previous, list):
+        return values
+    remaining = Counter(key(v) for v in values)
+    kept = []
+    for item in previous:
+        if remaining[key(item)] > 0:
+            remaining[key(item)] -= 1
+            kept.append(item)
+    for item in values:
+        if remaining[key(item)] > 0:
+            remaining[key(item)] -= 1
+            kept.append(item)
+    return kept
+
+
+def _set_or_drop(
+    doc: dict[str, Any],
+    key: str,
+    value: Any,
+    is_default: Callable[[Any], bool],
+    existing: dict[str, Any],
+) -> None:
+    """Write `value`; at its default, only keep a default the file spells out.
+
+    A template file says `references: []` and `mode: "alert"` on purpose, so
+    those stay. A value the tenant cleared back to the default goes away with
+    its key rather than lingering as `references: []`.
+    """
+    if not is_default(value):
+        doc[key] = value
+    elif key in existing and is_default(existing[key]):
+        doc[key] = existing[key]
+
+
+def _empty(value: Any) -> bool:
+    return value is None or value == []
 
 
 def _set_list(
     doc: dict[str, Any], key: str, values: list[Any], existing: dict[str, Any]
 ) -> None:
-    if values or key in existing:
-        doc[key] = values
+    _set_or_drop(doc, key, values, _empty, existing)
 
 
 def _grouping(
@@ -158,12 +182,14 @@ def _grouping(
     if grouping_field is not None:
         doc["groupingField"] = grouping_field
     threshold = vega.get("groupingThreshold")
-    if threshold is not None and (
-        grouping_field is not None
-        or threshold != DEFAULT_GROUPING_THRESHOLD
-        or "groupingThreshold" in existing
-    ):
-        doc["groupingThreshold"] = threshold
+    if threshold is not None:
+        _set_or_drop(
+            doc,
+            "groupingThreshold",
+            threshold,
+            lambda v: grouping_field is None and v == DEFAULT_GROUPING_THRESHOLD,
+            existing,
+        )
 
 
 def _cell_text(vega_query: str | None, previous: Any) -> str:
@@ -236,9 +262,13 @@ def detection_file(
         vega.get("frequencyCron"), existing.get("frequencyCron")
     )
     doc["lookBackSeconds"] = vega["lookBackSeconds"]
-    mode = str(vega.get("mode") or "ALERT").lower()
-    if mode != "alert" or "mode" in existing:
-        doc["mode"] = mode
+    _set_or_drop(
+        doc,
+        "mode",
+        str(vega.get("mode") or "ALERT").lower(),
+        lambda v: v is None or str(v).strip().lower() == "alert",
+        existing,
+    )
     for key in UNCLEARABLE_TEXT_FIELDS:
         if vega.get(key):
             doc[key] = vega[key]
@@ -246,21 +276,20 @@ def detection_file(
         _set_list(
             doc, key, _keep_order(list(vega.get(key) or []), existing.get(key)), existing
         )
-    window = vega.get("deduplicationWindowSeconds") or 0
-    if window or "deduplicationWindowSeconds" in existing:
-        doc["deduplicationWindowSeconds"] = window
+    _set_or_drop(
+        doc,
+        "deduplicationWindowSeconds",
+        vega.get("deduplicationWindowSeconds") or 0,
+        lambda v: not v,
+        existing,
+    )
     _grouping(doc, vega, existing)
     for key in ("actorFields", "targetFields"):
         _set_list(doc, key, list(vega.get(key) or []), existing)
     skill_ids = sorted(
         {skill_external_ids.get(s["id"], s["id"]) for s in vega.get("skills") or []}
     )
-    _set_list(
-        doc,
-        "skillIds",
-        _keep_order(skill_ids, existing.get("skillIds"), _same_set),
-        existing,
-    )
+    _set_list(doc, "skillIds", _keep_order(skill_ids, existing.get("skillIds")), existing)
     _cells(doc, list(vega.get("cells") or []), existing)
     return doc
 
@@ -361,18 +390,14 @@ def _expires_text(value: datetime, previous: Any) -> Any:
     return format_utc(value) or ""
 
 
-def _entity_key(entity: dict[str, Any]) -> tuple[str, str]:
+def _entity_key(entity: Any) -> Any:
+    if not isinstance(entity, dict):
+        return repr(entity)
     return str(entity.get("type") or "").upper(), str(entity.get("value") or "").strip().lower()
 
 
-def _same_entities(a: list[dict[str, Any]], b: list[Any]) -> bool:
-    return {_entity_key(e) for e in a} == {
-        _entity_key(e) for e in b if isinstance(e, dict)
-    }
-
-
-def _same_labels(a: Iterable[Any], b: Iterable[Any]) -> bool:
-    return {label_key(str(x)) for x in a} == {label_key(str(x)) for x in b}
+def _label_key(label: Any) -> str:
+    return label_key(str(label))
 
 
 def _text_or_previous(vega_value: Any, previous: Any) -> str:
@@ -394,9 +419,13 @@ def memory_file(
         ),
         "content": _text_or_previous(vega.get("content"), existing.get("content")),
     }
-    status = "enabled" if vega.get("enabled") else "disabled"
-    if status != "enabled" or "status" in existing:
-        doc["status"] = status
+    _set_or_drop(
+        doc,
+        "status",
+        "enabled" if vega.get("enabled") else "disabled",
+        lambda v: v is None or str(v).strip().lower() == "enabled",
+        existing,
+    )
     expires = parse_time(vega.get("expiresAt"), doc["title"], "expiresAt")
     if expires is not None:
         doc["expiresAt"] = _expires_text(expires, existing.get("expiresAt"))
@@ -404,15 +433,13 @@ def memory_file(
         {"type": str(e["type"]).lower(), "value": str(e["value"]).strip()}
         for e in vega.get("entities") or []
     ]
-    _set_list(doc, "entities", _keep_order(entities, existing.get("entities"), _same_entities), existing)
+    _set_list(doc, "entities", _keep_order(entities, existing.get("entities"), _entity_key), existing)
     labels = [
         label["name"]
         for label in vega.get("labels") or []
         if label.get("name") and label_key(label["name"]) != MANAGED_MEMORY_LABEL
     ]
-    _set_list(
-        doc, "labels", _keep_order(labels, existing.get("labels"), _same_labels), existing
-    )
+    _set_list(doc, "labels", _keep_order(labels, existing.get("labels"), _label_key), existing)
     return doc
 
 
@@ -484,35 +511,65 @@ def _styled_text(value: str, current: Any, key: str | None) -> Any:
 
 def _item_key(item: Any) -> Any:
     if isinstance(item, dict):
-        return item.get("name") or (item.get("type"), item.get("value"))
-    return None
+        if "name" in item:
+            return str(item.get("name"))
+        return _entity_key(item)
+    return str(item)
+
+
+def _styled_item(value: Any, sample: Any, key: str | None) -> Any:
+    if isinstance(value, str) and isinstance(sample, ScalarString) and "\n" not in value:
+        return type(sample)(value)
+    return _fresh(value, key)
 
 
 def _update_seq(current: Any, values: list[Any], key: str | None) -> Any:
+    """Bring a list to `values`, editing the file's own list in place.
+
+    Items that stay are left where they are, with their comments; items the
+    tenant dropped are removed and new ones appended. Only when the result
+    would still be in a different order (the ordered actor/target fields) is
+    the list rebuilt.
+    """
     if not isinstance(current, CommentedSeq):
         return _fresh(values, key)
     if not values:
         empty = CommentedSeq()
         empty.fa.set_flow_style()
         return empty
-    previous = {_item_key(item): item for item in current if isinstance(item, dict)}
     sample = next((item for item in current if isinstance(item, ScalarString)), None)
-    out = CommentedSeq()
-    for value in values:
-        if isinstance(value, dict):
-            item = previous.get(_item_key(value))
-            if isinstance(item, CommentedMap):
-                _update_map(item, value, tuple(value.keys()))
-                out.append(item)
-            else:
-                out.append(_fresh(value, key))
-        elif isinstance(value, str) and sample is not None and "\n" not in value:
-            out.append(type(sample)(value))
+
+    remaining = Counter(_item_key(v) for v in values)
+    for index in reversed(range(len(current))):
+        item_key = _item_key(current[index])
+        if remaining[item_key] > 0:
+            remaining[item_key] -= 1
         else:
-            out.append(_fresh(value, key))
+            del current[index]
+    present = Counter(_item_key(item) for item in current)
+    for value in values:
+        if present[_item_key(value)] > 0:
+            present[_item_key(value)] -= 1
+        else:
+            current.append(_styled_item(value, sample, key))
+
+    maps: dict[Any, list[CommentedMap]] = {}
+    for item in current:
+        if isinstance(item, CommentedMap):
+            maps.setdefault(_item_key(item), []).append(item)
+    for value in values:
+        if isinstance(value, dict) and maps.get(_item_key(value)):
+            _update_map(maps[_item_key(value)].pop(0), value, tuple(value.keys()))
+
+    if [_item_key(item) for item in current] == [_item_key(v) for v in values]:
+        return current
+    by_key: dict[Any, list[Any]] = {}
+    for item in current:
+        by_key.setdefault(_item_key(item), []).append(item)
+    rebuilt = CommentedSeq(by_key[_item_key(v)].pop(0) for v in values)
     if current.fa.flow_style():
-        out.fa.set_flow_style()
-    return out
+        rebuilt.fa.set_flow_style()
+    return rebuilt
 
 
 def _plain(value: Any) -> Any:

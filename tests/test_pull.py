@@ -64,6 +64,7 @@ def repo(tmp_path):
     (tmp_path / "detections" / "root-login.yaml").write_text(yaml.safe_dump(make_yaml()))
     (tmp_path / "skills" / "triage" / "service-account").mkdir(parents=True)
     (tmp_path / "skills" / "triage" / "service-account" / "SKILL.md").write_text(make_skill_md())
+    (tmp_path / "skills" / "triage" / "service-account" / "reference.md").write_text("# notes\n")
     (tmp_path / "memories").mkdir()
     (tmp_path / "memories" / "scanner.yaml").write_text(yaml.safe_dump(make_memory_yaml()))
     return tmp_path
@@ -84,11 +85,18 @@ def dirs(repo, name):
 
 
 def test_matching_detection_files_produce_no_change(repo):
-    assert pull_detections(dirs(repo, "detections"), [make_vega()], {}) == []
+    assert pull_detections(dirs(repo, "detections"), [make_vega()], {}) == ([], [])
+
+
+def test_a_detection_failing_the_lint_is_a_note_and_the_rest_is_pulled(repo):
+    bad = make_vega(id="bad", externalId=NEW_ID, name="x" * 230)
+    changes, notes = pull_detections(dirs(repo, "detections"), [make_vega(severity="LOW"), bad], {})
+    assert [c.action for c in changes] == ["update"]
+    assert len(notes) == 1 and "does not pass this repository's validation" in notes[0]
 
 
 def test_ui_edit_becomes_a_file_update(repo):
-    changes = pull_detections(dirs(repo, "detections"), [make_vega(severity="LOW", lookBackSeconds=600)], {})
+    changes, _ = pull_detections(dirs(repo, "detections"), [make_vega(severity="LOW", lookBackSeconds=600)], {})
     assert [(c.action, c.path.name, c.detail) for c in changes] == [
         ("update", "root-login.yaml", "severity, lookBackSeconds")
     ]
@@ -97,7 +105,7 @@ def test_ui_edit_becomes_a_file_update(repo):
 
 def test_ui_created_detection_becomes_a_new_file_named_after_it(repo):
     new = make_vega(id="new", externalId=NEW_ID, name="Tor Network Login!")
-    changes = pull_detections(dirs(repo, "detections"), [make_vega(), new], {})
+    changes, _ = pull_detections(dirs(repo, "detections"), [make_vega(), new], {})
     assert [(c.action, str(c.path.relative_to(repo))) for c in changes] == [
         ("add", "detections/tor-network-login.yaml")
     ]
@@ -106,12 +114,12 @@ def test_ui_created_detection_becomes_a_new_file_named_after_it(repo):
 
 def test_new_file_name_avoids_an_existing_file(repo):
     new = make_vega(id="new", externalId=NEW_ID, name="Root login")
-    changes = pull_detections(dirs(repo, "detections"), [make_vega(), new], {})
+    changes, _ = pull_detections(dirs(repo, "detections"), [make_vega(), new], {})
     assert changes[0].path.name == f"root-login-{NEW_ID[:8]}.yaml"
 
 
 def test_detection_deleted_in_the_ui_removes_the_file(repo):
-    changes = pull_detections(dirs(repo, "detections"), [], {})
+    changes, _ = pull_detections(dirs(repo, "detections"), [], {})
     assert [(c.action, c.path.name, c.external_id) for c in changes] == [
         ("remove", "root-login.yaml", YAML_ID)
     ]
@@ -120,14 +128,14 @@ def test_detection_deleted_in_the_ui_removes_the_file(repo):
 
 def test_library_detections_are_not_pulled(repo):
     library = make_vega(id="lib", externalId="lib", createdBy={"principalType": "vega_library"})
-    assert pull_detections(dirs(repo, "detections"), [make_vega(), library], {}) == []
+    assert pull_detections(dirs(repo, "detections"), [make_vega(), library], {}) == ([], [])
 
 
 def test_skill_ids_use_the_repository_id_when_skills_are_managed(repo):
     vega = make_vega(skills=[{"id": SKILL_TENANT_ID}])
-    managed = pull_detections(dirs(repo, "detections"), [vega], {SKILL_ID: SKILL_TENANT_ID})
+    managed, _ = pull_detections(dirs(repo, "detections"), [vega], {SKILL_ID: SKILL_TENANT_ID})
     assert yaml.safe_load(managed[0].text)["skillIds"] == [SKILL_ID]
-    unmanaged = pull_detections(dirs(repo, "detections"), [vega], None)
+    unmanaged, _ = pull_detections(dirs(repo, "detections"), [vega], None)
     assert yaml.safe_load(unmanaged[0].text)["skillIds"] == [SKILL_TENANT_ID]
 
 
@@ -135,7 +143,7 @@ def test_skill_ids_use_the_repository_id_when_skills_are_managed(repo):
 
 
 def test_matching_skill_files_produce_no_change(repo):
-    assert pull_skills(dirs(repo, "skills"), [make_vega_skill()]) == []
+    assert pull_skills(dirs(repo, "skills"), [make_vega_skill()]) == ([], [])
 
 
 def test_skill_edit_add_and_delete(repo):
@@ -143,14 +151,14 @@ def test_skill_edit_add_and_delete(repo):
     new = make_vega_skill(id="t2", externalId="9b0f5a3e-2c4d-4e6f-9a1b-3c5d7e9f1a2c", name="Lateral movement")
     ui_made = make_vega_skill(id="ui", externalId=None, name="From the UI")
     library = make_vega_skill(id="lib", externalId="lib", readOnly=True)
-    changes = pull_skills(dirs(repo, "skills"), [edited, new, ui_made, library])
+    changes, _ = pull_skills(dirs(repo, "skills"), [edited, new, ui_made, library])
     assert [(c.action, str(c.path.relative_to(repo)), c.detail) for c in changes] == [
         ("update", "skills/triage/service-account/SKILL.md", "instructions"),
         ("add", "skills/lateral-movement/SKILL.md", ""),
     ]
-    assert pull_skills(dirs(repo, "skills"), [ui_made, library]) == [
+    assert pull_skills(dirs(repo, "skills"), [ui_made, library]) == ([
         pull.Change("skill", "remove", repo / "skills" / "triage" / "service-account" / "SKILL.md", SKILL_ID, "Service account sign-in triage")
-    ]
+    ], [])
 
 
 # ---- memories ----------------------------------------------------------------
@@ -205,7 +213,7 @@ def test_pull_writes_every_kind_and_the_pr_body(repo, monkeypatch, tmp_path):
     assert client.calls == ["get_skills", "get_detections", "get_memories", "list_labels"]
     assert yaml.safe_load((repo / "detections" / "root-login.yaml").read_text())["name"] == "Renamed"
     assert (repo / "detections" / "new-one.yaml").exists()
-    assert not (repo / "skills" / "triage").exists(), "empty skill folders are pruned"
+    assert not (repo / "skills" / "triage").exists(), "the whole skill folder goes, parents pruned"
     assert (repo / "skills").exists()
     assert yaml.safe_load((repo / "memories" / "scanner.yaml").read_text())["content"] == "Changed"
     text = body.read_text()
@@ -277,3 +285,25 @@ def test_memories_unavailable_is_a_note_not_an_error(repo, monkeypatch):
     result = run(repo, Denied(), monkeypatch)
     assert result.exit_code == 0, result.output
     assert "Memories were not pulled" in result.output
+
+
+def test_an_unpullable_object_is_a_note_and_the_rest_is_still_written(repo, monkeypatch, tmp_path):
+    client = FakeClient()
+    client.detections = [make_vega(name="Renamed"), make_vega(id="bad", externalId=NEW_ID, name="x" * 230)]
+    body = tmp_path / "body.txt"
+    monkeypatch.setenv("GITHUB_ACTIONS", "true")
+    result = run(repo, client, monkeypatch, "--pr-body-file", str(body))
+    assert result.exit_code == 0, result.output
+    assert yaml.safe_load((repo / "detections" / "root-login.yaml").read_text())["name"] == "Renamed"
+    assert "::warning::Detection " in result.output
+    assert "**Not pulled**" in body.read_text() and "does not pass this repository's validation" in body.read_text()
+
+
+def test_removing_a_skill_takes_its_folder_but_never_the_root(repo, monkeypatch):
+    (repo / "skills" / "SKILL.md").write_text(make_skill_md(id="9b0f5a3e-2c4d-4e6f-9a1b-3c5d7e9f1a2c", name="Root skill"))
+    client = FakeClient()
+    client.skills = []
+    result = run(repo, client, monkeypatch)
+    assert result.exit_code == 0, result.output
+    assert not (repo / "skills" / "triage").exists()
+    assert (repo / "skills").is_dir() and not (repo / "skills" / "SKILL.md").exists()

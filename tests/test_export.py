@@ -156,12 +156,48 @@ def test_in_place_edit_keeps_comments_order_and_untouched_values():
 
 
 def test_in_place_edit_removes_what_the_tenant_no_longer_has():
-    existing = yaml.safe_dump(make_yaml(groupingField="x", references=["a"], deduplicationWindowSeconds=60, mode="alert"))
+    existing = yaml.safe_dump(make_yaml(groupingField="x", references=["a"], deduplicationWindowSeconds=60, mode="evidence"))
     doc = yaml.safe_load(exported(make_vega(), existing))
-    assert "groupingField" not in doc
-    assert doc["references"] == []
-    assert doc["deduplicationWindowSeconds"] == 0
-    assert doc["mode"] == "alert"
+    for key in ("groupingField", "references", "deduplicationWindowSeconds", "mode"):
+        assert key not in doc, key
+
+
+def test_defaults_the_file_spells_out_are_kept():
+    existing = yaml.safe_dump(make_yaml(references=[], deduplicationWindowSeconds=0, mode="alert", groupingThreshold=10, skillIds=[]))
+    text = exported(make_vega(name="Renamed"), existing)
+    doc = yaml.safe_load(text)
+    assert doc["references"] == [] and doc["deduplicationWindowSeconds"] == 0
+    assert doc["mode"] == "alert" and doc["groupingThreshold"] == 10 and doc["skillIds"] == []
+
+
+def test_list_items_keep_their_place_and_comments_when_one_is_added():
+    existing = (
+        'id: "019e0000-0000-7000-8000-000000000001"\n'
+        'name: "Root login"\n'
+        "severity: 4\n"
+        'state: "enabled"\n'
+        'frequencyCron: "5m"\n'
+        "lookBackSeconds: 300\n"
+        "mitreTechniques:\n"
+        '  - "T1078"  # valid accounts\n'
+        '  - "T1110"  # brute force, dropped in the tenant\n'
+        "query: |-\n"
+        "  @CloudTrail | where event_name == 'ConsoleLogin'\n"
+    )
+    vega = make_vega(mitreTechniques=["T1098", "T1078"])
+    text = exported(vega, existing)
+    assert (
+        "mitreTechniques:\n"
+        '  - "T1078"  # valid accounts\n'
+        '  - "T1098"\n'
+        "query:"
+    ) in text
+
+
+def test_ordered_fields_follow_the_tenant_order():
+    existing = yaml.safe_dump(make_yaml(actorFields=["a", "b"]))
+    doc = yaml.safe_load(exported(make_vega(actorFields=["b", "a"]), existing))
+    assert doc["actorFields"] == ["b", "a"]
 
 
 def test_skill_ids_are_written_as_repository_ids_and_keep_file_order():

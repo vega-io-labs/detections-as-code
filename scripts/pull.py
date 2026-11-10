@@ -20,6 +20,7 @@ from __future__ import annotations
 
 import io
 import os
+import shutil
 import sys
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
@@ -154,8 +155,9 @@ def pull_detections(
     dirs: tuple[Path, ...],
     vega_detections: list[dict[str, Any]],
     skill_tenant_ids: dict[str, str] | None,
-) -> list[Change]:
-    """Changes that make the detection files match the tenant.
+) -> tuple[list[Change], list[str]]:
+    """Changes that make the detection files match the tenant, and notes on
+    the detections that could not be written as files.
 
     `skill_tenant_ids` maps repository skill ids to tenant ids, or is None when
     skills are not managed here, in which case skill ids stay tenant ids.
@@ -166,6 +168,7 @@ def pull_detections(
     tenant_to_ext = {v: k for k, v in ext_to_tenant.items()}
     taken = {f.path for f in files.values()}
     changes: list[Change] = []
+    notes: list[str] = []
 
     for ext_id, vega in tenant.items():
         current = files.get(ext_id)
@@ -177,7 +180,11 @@ def pull_detections(
             continue
         doc = detection_file(vega, current.doc if current else None, tenant_to_ext)
         text = render(doc, current.text if current else None, DETECTION_KEY_ORDER)
-        verify_detection(text, vega, ext_to_tenant)
+        try:
+            verify_detection(text, vega, ext_to_tenant)
+        except ExportError as e:
+            notes.append(f"Detection {vega.get('name') or ext_id!r} not pulled: {e}")
+            continue
         name = vega.get("name") or ext_id
         if current is None:
             stem = slug(name) or ext_id
@@ -214,7 +221,7 @@ def pull_detections(
                     str(current.doc.get("name") or ext_id),
                 )
             )
-    return changes
+    return changes, notes
 
 
 # --------------------------------------------------------------------------
@@ -237,12 +244,14 @@ def _skill_changed(spec: SkillSpec, vega: dict[str, Any]) -> str:
 
 def pull_skills(
     dirs: tuple[Path, ...], vega_skills: list[dict[str, Any]]
-) -> list[Change]:
-    """Changes that make the SKILL.md files match the tenant's managed skills."""
+) -> tuple[list[Change], list[str]]:
+    """Changes that make the SKILL.md files match the tenant's managed skills,
+    and notes on the skills that could not be written as files."""
     specs = {spec.external_id: spec for spec in load_skill_files(dirs)}
     managed = {s["externalId"]: s for s in managed_skills(vega_skills)}
     taken = {Path(spec.path) for spec in specs.values()}
     changes: list[Change] = []
+    notes: list[str] = []
 
     for ext_id, vega in managed.items():
         spec = specs.get(ext_id)
@@ -265,7 +274,11 @@ def pull_skills(
         else:
             path = Path(spec.path)
         text = skill_file(vega, existing_text)
-        verify_skill(text, vega, str(path))
+        try:
+            verify_skill(text, vega, str(path))
+        except (ExportError, ValueError) as e:
+            notes.append(f"Skill {name!r} not pulled: {e}")
+            continue
         if spec is None:
             changes.append(Change("skill", "add", path, ext_id, name, "", text))
         else:
@@ -276,7 +289,7 @@ def pull_skills(
     for ext_id, spec in specs.items():
         if ext_id not in managed:
             changes.append(Change("skill", "remove", Path(spec.path), ext_id, spec.name))
-    return changes
+    return changes, notes
 
 
 # --------------------------------------------------------------------------
@@ -346,7 +359,11 @@ def pull_memories(
             )
         else:
             path = current.path
-        verify_memory(text, vega, str(path), label_ids, managed_id)
+        try:
+            verify_memory(text, vega, str(path), label_ids, managed_id)
+        except (ExportError, ValueError) as e:
+            notes.append(f"Memory {title!r} not pulled: {e}")
+            continue
         if current is None:
             changes.append(Change("memory", "add", path, memory_id, title, "", text))
         else:
@@ -393,12 +410,24 @@ def _prune_empty_dirs(directory: Path, roots: Iterable[Path]) -> None:
         directory = directory.parent
 
 
+def _remove_skill(path: Path, roots: Iterable[Path]) -> None:
+    # A skill folder may hold references next to its SKILL.md; the sync
+    # ignores them, but leaving them behind would orphan them in the repo.
+    folder = path.parent
+    if folder.resolve() in {r.resolve() for r in roots}:
+        path.unlink(missing_ok=True)
+        return
+    shutil.rmtree(folder, ignore_errors=True)
+    _prune_empty_dirs(folder.parent, roots)
+
+
 def apply_changes(changes: list[Change], skill_roots: Iterable[Path]) -> None:
     for change in changes:
         if change.action == "remove":
-            change.path.unlink(missing_ok=True)
             if change.target == "skill":
-                _prune_empty_dirs(change.path.parent, skill_roots)
+                _remove_skill(change.path, skill_roots)
+            else:
+                change.path.unlink(missing_ok=True)
         else:
             change.path.parent.mkdir(parents=True, exist_ok=True)
             change.path.write_text(change.text or "", encoding="utf-8")
@@ -432,8 +461,9 @@ def pr_body(report: PullReport, tenant_url: str, now: datetime | None = None) ->
                 f"| {_cell(change.name)} | {_cell(_detail(change))} |"
             )
         lines.append("")
-    lines += [f"Note: {note}" for note in report.notes]
     if report.notes:
+        lines += ["**Not pulled**", ""]
+        lines += [f"- {note}" for note in report.notes]
         lines.append("")
     lines += [
         "Merging makes the repository match the tenant, so the sync that "
@@ -620,7 +650,9 @@ def main(
         try:
             vega_skills = client.get_skills()
             skill_tenant_ids = skill_ids_by_external_id(vega_skills)
-            report.changes += pull_skills(skill_dirs, vega_skills)
+            changes, notes = pull_skills(skill_dirs, vega_skills)
+            report.changes += changes
+            report.notes += notes
         except (VegaAPIError, ValueError, RuntimeError) as e:
             skills_ok = False
             report.errors.append(f"skills: {e}")
@@ -634,9 +666,11 @@ def main(
         )
     else:
         try:
-            report.changes += pull_detections(
+            changes, notes = pull_detections(
                 detection_dirs, client.get_detections(), skill_tenant_ids
             )
+            report.changes += changes
+            report.notes += notes
         except (VegaAPIError, ValueError, RuntimeError) as e:
             report.errors.append(f"detections: {e}")
 
@@ -653,7 +687,9 @@ def main(
     for error in report.errors:
         console.print(f"[red]ERROR:[/] {error}")
     for note in report.notes:
-        console.print(f"[dim]{note}[/]")
+        console.print(f"[yellow]note:[/] {note}")
+        if os.environ.get("GITHUB_ACTIONS"):
+            print(f"::warning::{note}")
     if report.changes:
         console.print(_changes_table(report))
     else:
