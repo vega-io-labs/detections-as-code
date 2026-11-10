@@ -1719,3 +1719,45 @@ input DeleteSkillsInput {
   """
   ids: [ID!]!
 }
+"""Lifecycle state of a federated query."""
+enum FederatedQueryState {
+  QUEUED
+  RUNNING
+  FINISHED
+  FAILED
+  CANCELLED
+}
+
+"""Response returned after submitting a federated query."""
+type RunFederatedQueryOutput {
+  """Server-generated unique identifier for the query."""
+  queryId: String!
+  """Current lifecycle state of the query."""
+  state: FederatedQueryState!
+  """Error message if the query submission failed. Null if the query submitted successfully."""
+  error: String
+}
+
+"""Full status and details of a federated query."""
+type FederatedQueryStatus {
+  """Server-generated unique identifier for the query."""
+  queryId: String!
+  """Current lifecycle state of the query."""
+  state: FederatedQueryState!
+  """Total number of result rows. Null if results are not yet available."""
+  count: Int
+  """Error message if the query failed. Null if no error occurred."""
+  error: String
+}
+
+extend type Query {
+  """Retrieve lifecycle state and details for a submitted federated query. Returns null if the query ID is not found."""
+  federatedQueryStatus(queryId: String!): FederatedQueryStatus
+}
+
+extend type Mutation {
+  """Submits an asynchronous federated query across logs and events in one or more data sources. Returns a server-generated queryId."""
+  runFederatedQuery(query: String!, timeframe: String!, queryTimeout: Int): RunFederatedQueryOutput
+  """Cancel a running federated query. Returns the query ID of the cancelled query."""
+  cancelFederatedQuery(queryId: String!): String!
+}

@@ -34,7 +34,7 @@ Before adopting Detection-as-Code, ensure the following are in place:
 
 3. (Optional) Protect the `main` branch:
    - GitHub: Settings → Branches → Add rule for `main`
-   - Require status check: `validate` (the job in the `Validate PR` workflow)
+   - Require status checks: `validate` and `kql` (the jobs in the `Validate PR` workflow)
    - Require pull requests before merging
 
 The workflows target `https://app.vega.io` and are ready to use once the access key is set. No additional tenant configuration is required.
@@ -47,7 +47,7 @@ For a typical change:
 
 1. Create a branch off `main`. Add, edit, or remove a YAML under `detections/` or `memories/`, or a `SKILL.md` under `skills/`.
 2. (Recommended) Run a local dry-run against your tenant - see [Local dry-run](#local-dry-run) below.
-3. Open a pull request. The `Validate PR` check runs schema lint against the changed files.
+3. Open a pull request. The `Validate PR` check runs schema lint against the changed files, and runs the KQL of every cell of the changed detections on the tenant (see [KQL check](#kql-check)).
 4. Review and merge.
 5. The `Sync Detections, Skills and Memories to Vega` workflow runs on `main`. Review its **Summary** tab for the per-detection, per-skill and per-memory result table.
 6. Open Vega UI -> Detections to confirm the change. Each sync to an existing detection is recorded as a row in the version-history pane.
@@ -325,7 +325,7 @@ Three GitHub Actions workflows ship with this template:
 
 | Workflow | File | Trigger | What it does |
 |---|---|---|---|
-| **Validate PR** | `.github/workflows/validate.yml` | Pull request touching `detections/**`, `skills/**`, `memories/**` or `scripts/**` | Schema lint on each changed YAML and `SKILL.md`. No tenant secret needed; runs cleanly on PRs from forks. |
+| **Validate PR** | `.github/workflows/validate.yml` | Pull request touching `detections/**`, `skills/**`, `memories/**` or `scripts/**` | Schema lint on each changed YAML and `SKILL.md` (no secret needed). The `kql` job runs each cell of the changed detections on the tenant; on a PR from a fork, which gets no secrets, it is skipped with a notice. |
 | **Sync Detections, Skills and Memories to Vega** | `.github/workflows/sync.yml` | Push to `main` touching `detections/**`, `skills/**`, `memories/**` or `scripts/**`. Also `workflow_dispatch`. | Reconciles everything against the tenant: skills first, then detections batched in chunks of 100, then memories one call each. `dry_run` and `no_deletes` inputs available on manual dispatch. |
 | **Sync ALL detections, skills and memories (manual)** | `.github/workflows/sync-all.yml` | Manual (`workflow_dispatch`) only | Same reconcile, but defaults to `dry_run=true` and `no_deletes=true`. Use for first-run bulk deploy or recovery after a partial sync. |
 
@@ -442,6 +442,18 @@ Inside Vega, each merged change appears as a row in the detection's version-hist
 | Validate fails with `unknown field 'enabled'` (or `name`, `id`) on a memory | The memory schema uses `status`, `title`, and has no id. | Rename the key as the message says. |
 | Validate warns `'expiresAt' ... is in the past` | The memory has expired. | Delete the file, or move the date forward. A new memory with a past date fails the sync. |
 | Validate fails with `'lookBackSeconds' must be >= the Ns 'frequencyCron' interval` | The lookback window is shorter than the schedule, which would skip data between runs. | Raise `lookBackSeconds` to at least the interval, or shorten `frequencyCron`. |
+
+### KQL check
+
+The `kql` job of `Validate PR` runs every cell of each changed detection through `runFederatedQuery`, one cell at a time, over the last 15 minutes, with the sync's access key (it needs the `QueryRead` permission). Nothing is written to the tenant.
+
+- A cell that references other cells (`@CellName`) runs with those cells inlined before it as `let` statements, in dependency order, so each cell is checked on its own and an error is reported on the cell that has it. A cell that uses a failing cell is marked "not checked".
+- A syntax error fails the check with an annotation on the exact file, line and column in the pull request diff, the engine's message and its hint (`did you mean 'where'?`). The job's **Summary** shows the same with the line and a caret.
+- A data source or lookup table that does not exist in the tenant fails the check and lists the selectors of that cell. Names are case-sensitive.
+- A query that runs past the timeout, a rate limit, or a platform error is a warning, not a failure: the KQL may be fine.
+- The check compiles and runs the query; it does not tell you the query matches anything. Zero rows is a pass.
+
+Locally: `python -m scripts.kql_validate --detections-dir ./detections` checks every detection file; add `--base-sha <commit>` for only the files changed since then.
 
 ### Sync at merge time
 

@@ -1,11 +1,7 @@
 """PR-time validator: schema lint for changed detections, skills and memories.
 
-KQL validation is deliberately not done at PR time. The sync workflow's
-createDetections/updateDetections calls validate KQL server-side on merge,
-and any failure is reported in that run's step summary. Running a pre-flight
-runFederatedQuery here would duplicate that check, cost tenant compute, and
-introduce edge cases around multi-cell reference resolution that only the
-deployment path resolves correctly.
+KQL is checked by scripts/kql_validate.py, a separate job of the same
+workflow, because it needs the tenant secret and this check must not.
 
 Usage (in GitHub Actions):
   python -m scripts.pr_validate \
@@ -568,8 +564,7 @@ def _write_step_summary(report: Report, deleted: list[str]) -> None:
         body = f"\n```\n{_render_text(_result_table(report, deleted))}```\n"
 
     footer = (
-        "\n_KQL is validated at sync time. If your KQL is broken, the sync "
-        "run after merge will fail with the API error._\n"
+        "\n_KQL is checked by the `kql` job of this workflow._\n"
     )
 
     try:
