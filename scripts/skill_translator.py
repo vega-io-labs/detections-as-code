@@ -148,15 +148,24 @@ def _instructions(body: str, where: str) -> str:
     return text
 
 
-def parse_skill(raw: str, where: str) -> SkillSpec:
+def split_frontmatter(raw: str) -> tuple[str, str] | None:
+    """The frontmatter YAML and the Markdown body, or None without a frontmatter."""
     match = _FRONTMATTER_RE.match(raw.lstrip("﻿"))
     if not match:
+        return None
+    return match.group(1), match.group(2) or ""
+
+
+def parse_skill(raw: str, where: str) -> SkillSpec:
+    parts = split_frontmatter(raw)
+    if parts is None:
         raise ValueError(
             f"{where}: a skill file starts with YAML frontmatter between two "
             f"'---' lines, followed by the instructions"
         )
+    frontmatter, body = parts
     try:
-        doc = yaml.safe_load(match.group(1))
+        doc = yaml.safe_load(frontmatter)
     except yaml.YAMLError as e:
         raise ValueError(f"{where}: frontmatter YAML parse: {e}") from None
     if not isinstance(doc, dict):
@@ -179,7 +188,7 @@ def parse_skill(raw: str, where: str) -> SkillSpec:
         name=_text(doc, "name", SKILL_NAME_MAX_LEN, where),
         description=_text(doc, "description", SKILL_DESCRIPTION_MAX_LEN, where),
         type=_skill_type(doc.get("type"), where),
-        instructions=_instructions(match.group(2) or "", where),
+        instructions=_instructions(body, where),
         path=where,
     )
 

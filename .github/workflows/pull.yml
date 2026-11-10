@@ -1,0 +1,206 @@
+name: Pull tenant changes into a pull request
+
+# The reverse of sync.yml. Every 10 hours (and on demand) it reads the tenant
+# and compares it with the files on the default branch. When a detection,
+# skill or memory was changed, created or deleted in the Vega UI (or through
+# the API), the matching file changes are committed to one branch and opened
+# as a pull request, which is updated on later runs until it is merged or
+# closed. Merging it makes the repository match the tenant, so the sync that
+# follows has nothing to do. Nothing is written to the tenant.
+#
+# Needs, besides the sync secrets:
+#   - A VEGA_PULL_TOKEN secret (a fine-grained token with contents and
+#     pull-requests write), or the repository setting "Allow GitHub Actions
+#     to create and approve pull requests". Pull requests opened with the
+#     workflow's own token trigger no checks, so a protected branch cannot
+#     merge them; the token is the way to go there.
+#   - Scheduled workflows are off in a fresh fork until enabled under the
+#     Actions tab, and GitHub pauses them after 60 days without a commit.
+
+on:
+  schedule:
+    - cron: '0 */10 * * *'
+  workflow_dispatch:
+
+permissions:
+  contents: write
+  pull-requests: write
+  actions: read
+
+# Not the sync's group on purpose: a queued run in a shared group is replaced
+# by the next one, so a pull landing behind a queued sync would cancel it.
+concurrency:
+  group: vega-pull-${{ github.ref }}
+  cancel-in-progress: false
+
+env:
+  PULL_BRANCH: vega/tenant-changes
+  BOT_NAME: github-actions[bot]
+  BOT_EMAIL: 41898282+github-actions[bot]@users.noreply.github.com
+
+jobs:
+  pull:
+    runs-on: ubuntu-latest
+    steps:
+      # The token is only needed by the last step, which passes it on each
+      # git call; nothing else in the job (pip install included) gets it.
+      - uses: actions/checkout@v5
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+
+      - name: Verify Vega credentials are set
+        env:
+          VEGA_ACCESS_KEY: ${{ secrets.VEGA_ACCESS_KEY }}
+          VEGA_ACCESS_KEY_ID: ${{ secrets.VEGA_ACCESS_KEY_ID }}
+        run: |
+          if [ -z "$VEGA_ACCESS_KEY" ]; then
+            echo "::error::VEGA_ACCESS_KEY repository secret is not set."
+            echo "::error::Configure it under Settings -> Secrets and variables -> Actions."
+            echo "::error::See README 'First-time setup' for instructions."
+            exit 1
+          fi
+          if [ -z "$VEGA_ACCESS_KEY_ID" ]; then
+            echo "::warning::VEGA_ACCESS_KEY_ID is not set. Keys created on or after 2026-06-18 need it; without it the API rejects every call with 'X-Vega-Key-Id header is required'."
+          fi
+
+      # The tenant lags the repository while a sync runs, and stays behind
+      # when one fails: a create the API rejected looks exactly like a
+      # deletion made in Vega. Reading the tenant in either state would
+      # propose undoing the merge, so wait for a clean sync instead.
+      - name: Skip unless the last sync succeeded and none is running
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          syncs=$(gh run list --workflow sync.yml --branch "$GITHUB_REF_NAME" --limit 20 --json status,conclusion)
+          sync_alls=$(gh run list --workflow sync-all.yml --branch "$GITHUB_REF_NAME" --limit 20 --json status,conclusion)
+          running=$(jq -n --argjson a "$syncs" --argjson b "$sync_alls" \
+            '[$a[], $b[] | select(.status != "completed")] | length')
+          last=$(jq -r 'first(.[] | select(.status == "completed")) | .conclusion // "none"' <<<"$syncs")
+          echo "Sync runs on $GITHUB_REF_NAME: running=$running, last completed sync=$last"
+          skip=""
+          if [ "$running" != "0" ]; then
+            skip="A sync is still running on \`$GITHUB_REF_NAME\`; pulling on the next run."
+          elif [ "$last" != "none" ] && [ "$last" != "success" ]; then
+            skip="The last sync of \`$GITHUB_REF_NAME\` ended with \`$last\`, so the tenant may be behind the repository. Fix that sync or run Sync ALL, then the pull resumes. Pulling now could read a failed create as a deletion made in Vega."
+          fi
+          if [ -n "$skip" ]; then
+            echo "## Vega pull skipped" >> "$GITHUB_STEP_SUMMARY"
+            echo "$skip" >> "$GITHUB_STEP_SUMMARY"
+            echo "::notice::$skip"
+            echo "SKIP_PULL=true" >> "$GITHUB_ENV"
+          fi
+
+      - uses: actions/setup-python@v6
+        if: env.SKIP_PULL != 'true'
+        with:
+          python-version: '3.14'
+
+      - name: Install dependencies
+        if: env.SKIP_PULL != 'true'
+        run: pip install -r requirements.txt
+
+      - name: Pull the tenant into the working tree
+        if: env.SKIP_PULL != 'true'
+        env:
+          VEGA_ACCESS_KEY: ${{ secrets.VEGA_ACCESS_KEY }}
+          VEGA_ACCESS_KEY_ID: ${{ secrets.VEGA_ACCESS_KEY_ID }}
+          VEGA_SCOPE_ID: ${{ vars.VEGA_SCOPE_ID }}
+          VEGA_TENANT_URL: ${{ vars.VEGA_TENANT_URL || 'https://app.vega.io' }}
+        run: |
+          python -m scripts.pull \
+            --detections-dir ./detections \
+            --skills-dir ./skills \
+            --memories-dir ./memories \
+            --pr-body-file "$RUNNER_TEMP/pr-body.md"
+
+      - name: Open, update or close the pull request
+        if: env.SKIP_PULL != 'true'
+        env:
+          GH_TOKEN: ${{ secrets.VEGA_PULL_TOKEN || github.token }}
+          PULL_TOKEN_SET: ${{ secrets.VEGA_PULL_TOKEN != '' }}
+        run: |
+          set -euo pipefail
+          summary() { echo "$1" >> "$GITHUB_STEP_SUMMARY"; echo "$1"; }
+          # Same mechanism actions/checkout uses: the token travels in a header
+          # for this one command and never lands in .git/config or a URL.
+          auth="http.https://github.com/.extraheader=AUTHORIZATION: basic $(printf 'x-access-token:%s' "$GH_TOKEN" | base64 | tr -d '\n')"
+          git_auth() { git -c "$auth" "$@"; }
+          # The three folders' tree ids, so a comparison ignores commits on
+          # the base branch that touched nothing the pull manages.
+          drift_tree() {
+            for folder in detections skills memories; do
+              git rev-parse --quiet --verify "$1:$folder" 2>/dev/null || echo none
+            done | paste -sd' ' -
+          }
+
+          # The template ships no skills/ folder, and `git add` refuses a path
+          # that does not exist.
+          for folder in detections skills memories; do
+            [ -d "$folder" ] && git add -A "$folder"
+          done
+          new_tree=$(drift_tree "$(git write-tree)")
+          open_pr=$(gh pr list --head "$PULL_BRANCH" --base "$GITHUB_REF_NAME" \
+            --state open --json number --jq '.[0].number // empty')
+
+          if git diff --cached --quiet; then
+            summary "The repository matches the tenant."
+            if [ -n "$open_pr" ]; then
+              gh pr close "$open_pr" --delete-branch \
+                --comment "The tenant matches \`$GITHUB_REF_NAME\` again, so there is nothing left to pull."
+            fi
+            exit 0
+          fi
+
+          if [ -n "$open_pr" ]; then
+            git_auth fetch --quiet origin "+refs/heads/$PULL_BRANCH:refs/remotes/origin/$PULL_BRANCH"
+            if [ "$(drift_tree "refs/remotes/origin/$PULL_BRANCH")" = "$new_tree" ]; then
+              summary "Pull request #$open_pr already carries these changes."
+              exit 0
+            fi
+            # A reviewer may have pushed a fix to the pull request. Rebuilding
+            # the branch would wipe it, so the new changes wait instead.
+            others=$(git log "origin/$GITHUB_REF_NAME..refs/remotes/origin/$PULL_BRANCH" --format=%ae \
+              | grep -vF "$BOT_EMAIL" | sort -u || true)
+            if [ -n "$others" ]; then
+              marker="<!-- vega-pull: waiting -->"
+              if ! gh pr view "$open_pr" --json comments --jq '.comments[].body' | grep -qF "$marker"; then
+                gh pr comment "$open_pr" --body "$marker New changes made in Vega are waiting. This pull request carries commits the pull workflow did not make, so it is not rebuilt until it is merged or closed."
+              fi
+              summary "Pull request #$open_pr has commits by $(echo "$others" | paste -sd, -); not rebuilding it. New tenant changes wait until it is merged or closed."
+              exit 0
+            fi
+          else
+            # A pull request closed without merging means "not these changes".
+            # Reopening the same ones every run would make closing pointless.
+            closed_pr=$(gh pr list --head "$PULL_BRANCH" --base "$GITHUB_REF_NAME" --state closed --limit 5 \
+              --json number,mergedAt --jq '[.[] | select(.mergedAt == null)] | .[0].number // empty')
+            if [ -n "$closed_pr" ] && git_auth fetch --quiet origin "refs/pull/$closed_pr/head" \
+              && [ "$(drift_tree FETCH_HEAD)" = "$new_tree" ]; then
+              summary "Pull request #$closed_pr was closed with these same changes; not reopening it until the tenant changes again. Run Sync ALL to put the repository's version back in the tenant."
+              exit 0
+            fi
+          fi
+
+          git config user.name "$BOT_NAME"
+          git config user.email "$BOT_EMAIL"
+          git checkout --quiet -B "$PULL_BRANCH"
+          git commit --quiet -m "Pull tenant changes from Vega"
+          git_auth push --force --quiet origin "$PULL_BRANCH"
+
+          if [ "$PULL_TOKEN_SET" != "true" ]; then
+            echo "::warning::VEGA_PULL_TOKEN is not set, so the pull request is opened with the workflow's own token: no check runs on it, and a protected branch cannot merge it. See README 'First-time setup' step 4."
+          fi
+          if [ -n "$open_pr" ]; then
+            gh pr edit "$open_pr" --body-file "$RUNNER_TEMP/pr-body.md"
+            summary "Updated pull request #$open_pr."
+          else
+            if ! url=$(gh pr create --base "$GITHUB_REF_NAME" --head "$PULL_BRANCH" \
+              --title "Pull tenant changes from Vega" \
+              --body-file "$RUNNER_TEMP/pr-body.md"); then
+              git_auth push --quiet origin --delete "$PULL_BRANCH"
+              echo "::error::Could not open the pull request. Set the VEGA_PULL_TOKEN secret, or allow GitHub Actions to create pull requests under Settings -> Actions -> General."
+              exit 1
+            fi
+            summary "Opened $url."
+          fi

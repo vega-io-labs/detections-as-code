@@ -4,3 +4,4 @@ gql[requests]>=3.5
 click>=8.1
 rich>=13.0
 tenacity>=8.2
+ruamel.yaml>=0.18

@@ -6,6 +6,8 @@ Guidance for AI coding assistants (Claude Code, Cursor, Copilot, etc.) operating
 
 Detection-as-Code template for Vega customers. YAML detections under `detections/`, `SKILL.md` skills under `skills/` and YAML memories under `memories/` are synchronised to the customer's Vega tenant on every merge to `main`. The sync engine resides in `scripts/`; the GitHub Actions workflows reside in `.github/workflows/`.
 
+The repository is also kept in step the other way: `scripts/pull.py` reads the tenant and rewrites the files so the sync finds nothing to do, and `.github/workflows/pull.yml` runs it every 10 hours and opens one pull request with the difference. `scripts/export.py` is the reverse of `translator.py`: it turns an API object into the file whose forward payload is a no-op against it, editing an existing file in place with ruamel.yaml so comments and key order survive.
+
 ## Authoring a new detection
 
 1. Copy [`docs/detection.template.yaml`](docs/detection.template.yaml) into `detections/<category>/<name>.yaml`. The subdirectory layout is for organisational use only; the sync engine reads recursively.
@@ -96,6 +98,8 @@ requests opened from forks validate under the same rules.
 - Skills: the sync manages every tenant skill that has an externalId (the `id` in a `SKILL.md`), matched by that id, and deletes the ones with no file here. UI-made and library skills are never changed. Never reuse a deleted skill's id. A new skill named like a UI skill is blocked. Skills sync before detections, and detections naming a skill that failed to sync are held back for that run. The sync never sends skill labels. A missing `skills/` folder disables skill sync, and the template does not ship one; an empty one deletes every skill the sync manages.
 - Memories: the sync only touches memories carrying the `detections-as-code` label and matches them to files by title. Memories from the UI or learned by Vega are never changed, and a file whose title matches one of them is blocked rather than duplicated. `entities` and `labels` are authoritative on every sync. A missing `memories/` folder disables memory sync; an empty one deletes every memory the sync manages. Memory calls are one per memory, ordered deletes, updates, creates.
 - No-op updates are skipped: the reconciler diffs each YAML against the current Vega state and silently drops detections already in the target shape. This avoids resetting dynamic schedules on unchanged rules and keeps the run-summary signal-to-noise ratio high.
+- The pull is the mirror image of that no-op check, and the two must stay in step. `scripts/export.py` builds each file so that `reconciler.is_no_op_update`, `skill_reconciler.is_no_op` and `memory_reconciler.is_no_op` return true against the tenant object, and verifies it before writing; a change to what the sync compares needs the same change in the exporter, or every pull opens a pull request the sync then ignores. The pull manages exactly what the sync manages: every non-library detection, skills with an `id`, memories with the `detections-as-code` label. It only touches keys whose values moved, drops a key when the tenant cleared it back to the default (a default the file spells out stays), keeps list items where the file has them with their comments and appends new ones, and writes a new detection as `detections/<slug of the name>.yaml`. An object that fails the repository's own validation is a note in the pull request, not a failed run.
+- A file in the repository with no object in the tenant is removed by the pull, which is right after a deletion in the UI and wrong after a failed create. The workflow therefore skips the pull while any sync runs and after a failed one, never rebuilds a pull request that carries someone else's commits, does not reopen a pull request that was closed with the same changes, and runs in its own concurrency group: sharing the sync's group would let a queued pull replace a queued sync. The token reaches only the step that pushes, through a per-command header, never `.git/config`.
 
 ## Local dry-run before opening a PR
 
@@ -108,6 +112,8 @@ python -m scripts.sync \
 ```
 
 `--dry-run` prints the plan (creates / updates / deletes / no-op skipped) without modifying tenant state. Add `--no-deletes` to also skip deletions while iterating on the schema.
+
+To see what changed in Vega since the files were last synced, run the pull the same way: `python -m scripts.pull --detections-dir ./detections --dry-run` lists the file changes, and without `--dry-run` writes them into the working tree for `git diff`.
 
 ## Constraints
 
