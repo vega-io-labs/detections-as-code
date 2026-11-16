@@ -24,11 +24,10 @@ import yaml
 
 from .client import ACCESS_DENIED, VegaAPIError, VegaClient
 from .consts import (
-    MANAGED_MEMORY_LABEL,
-    MANAGED_MEMORY_LABEL_COLOR,
+    MANAGED_LABEL,
     MemoryStatus,
 )
-from .labels import label_ids_by_name, label_key
+from .labels import ManagedLabel, label_ids_by_name, label_key, managed_label_id
 from .memory_translator import (
     MemorySpec,
     parse_memory,
@@ -156,12 +155,12 @@ def index_by_title(
 def _released_reason(managed_label_id: str | None) -> str:
     duplicate = (
         f"a memory with this title already exists without the "
-        f"'{MANAGED_MEMORY_LABEL}' label, so creating it would duplicate it"
+        f"'{MANAGED_LABEL}' label, so creating it would duplicate it"
     )
     if managed_label_id is None:
         return (
             f"{duplicate}. The label does not exist yet: create "
-            f"'{MANAGED_MEMORY_LABEL}' in the Vega UI and add it to that "
+            f"'{MANAGED_LABEL}' in the Vega UI and add it to that "
             f"memory to hand it to the sync, or delete the memory"
         )
     return (
@@ -239,7 +238,7 @@ def build_memory_plan(
     labels: list[dict[str, Any]],
 ) -> MemoryPlan:
     label_ids = label_ids_by_name(labels)
-    plan = MemoryPlan(managed_label_id=label_ids.get(MANAGED_MEMORY_LABEL))
+    plan = MemoryPlan(managed_label_id=managed_label_id(labels))
     tenant = index_by_title(vega_memories, plan.managed_label_id)
     for spec in specs:
         _plan_memory(plan, spec, tenant, label_ids)
@@ -280,26 +279,24 @@ def _result(
 
 
 def _ensure_managed_label(
-    client: VegaClient, plan: MemoryPlan, report: SyncReport
+    plan: MemoryPlan, report: SyncReport, label: ManagedLabel
 ) -> bool:
     if plan.managed_label_id:
         return True
     try:
-        label = client.create_label(
-            MANAGED_MEMORY_LABEL, MANAGED_MEMORY_LABEL_COLOR
-        )
+        label_id = label.id()
     except VegaAPIError as e:
-        reason = f"could not create the '{MANAGED_MEMORY_LABEL}' label: {e}"
+        reason = f"could not create the '{MANAGED_LABEL}' label: {e}"
         for entry in plan.creates:
             report.add(_result("create", "", entry.name, reason))
         return False
-    plan.managed_label_id = label["id"]
+    plan.managed_label_id = label_id
     plan.creates = [
         replace(
             entry,
             payload={
                 **entry.payload,
-                "labelIds": [*entry.payload["labelIds"], label["id"]],
+                "labelIds": [*entry.payload["labelIds"], label_id],
             },
         )
         for entry in plan.creates
@@ -324,12 +321,16 @@ def _apply(
 
 
 def execute_memory_plan(
-    client: VegaClient, plan: MemoryPlan, skip_deletes: bool = False
+    client: VegaClient,
+    plan: MemoryPlan,
+    skip_deletes: bool = False,
+    label: ManagedLabel | None = None,
 ) -> SyncReport:
     report = SyncReport()
+    label = label or ManagedLabel(client)
     if not skip_deletes:
         _apply("delete", plan.deletes, client.delete_memory, report)
     _apply("update", plan.updates, client.update_memory, report)
-    if plan.creates and _ensure_managed_label(client, plan, report):
+    if plan.creates and _ensure_managed_label(plan, report, label):
         _apply("create", plan.creates, client.create_memory, report)
     return report

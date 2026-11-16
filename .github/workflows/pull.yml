@@ -8,12 +8,14 @@ name: Pull tenant changes into a pull request
 # closed. Merging it makes the repository match the tenant, so the sync that
 # follows has nothing to do. Nothing is written to the tenant.
 #
-# Needs, besides the sync secrets:
-#   - A VEGA_PULL_TOKEN secret (a fine-grained token with contents and
-#     pull-requests write), or the repository setting "Allow GitHub Actions
-#     to create and approve pull requests". Pull requests opened with the
-#     workflow's own token trigger no checks, so a protected branch cannot
-#     merge them; the token is the way to go there.
+# Needs, besides the sync secrets, one way to open the pull request:
+#   - A GitHub App (recommended): the VEGA_PULL_APP_CLIENT_ID variable and the
+#     VEGA_PULL_APP_PRIVATE_KEY secret. Each run gets a fresh one-hour token.
+#   - Or a VEGA_PULL_TOKEN secret (a fine-grained token with contents and
+#     pull-requests write).
+#   - Or the repository setting "Allow GitHub Actions to create and approve
+#     pull requests". Pull requests opened with the workflow's own token
+#     trigger no checks, so a protected branch cannot merge them.
 #   - Scheduled workflows are off in a fresh fork until enabled under the
 #     Actions tab, and GitHub pauses them after 60 days without a commit.
 
@@ -78,7 +80,7 @@ jobs:
           sync_alls=$(gh run list --workflow sync-all.yml --branch "$GITHUB_REF_NAME" --limit 20 --json status,conclusion)
           running=$(jq -n --argjson a "$syncs" --argjson b "$sync_alls" \
             '[$a[], $b[] | select(.status != "completed")] | length')
-          last=$(jq -r 'first(.[] | select(.status == "completed")) | .conclusion // "none"' <<<"$syncs")
+          last=$(jq -r '(first(.[] | select(.status == "completed")) | .conclusion) // "none"' <<<"$syncs")
           echo "Sync runs on $GITHUB_REF_NAME: running=$running, last completed sync=$last"
           skip=""
           if [ "$running" != "0" ]; then
@@ -116,11 +118,21 @@ jobs:
             --memories-dir ./memories \
             --pr-body-file "$RUNNER_TEMP/pr-body.md"
 
+      - name: Get a GitHub App token
+        id: app
+        if: env.SKIP_PULL != 'true' && vars.VEGA_PULL_APP_CLIENT_ID != ''
+        uses: actions/create-github-app-token@v3
+        with:
+          client-id: ${{ vars.VEGA_PULL_APP_CLIENT_ID }}
+          private-key: ${{ secrets.VEGA_PULL_APP_PRIVATE_KEY }}
+          permission-contents: write
+          permission-pull-requests: write
+
       - name: Open, update or close the pull request
         if: env.SKIP_PULL != 'true'
         env:
-          GH_TOKEN: ${{ secrets.VEGA_PULL_TOKEN || github.token }}
-          PULL_TOKEN_SET: ${{ secrets.VEGA_PULL_TOKEN != '' }}
+          GH_TOKEN: ${{ steps.app.outputs.token || secrets.VEGA_PULL_TOKEN || github.token }}
+          TOKEN_SOURCE: ${{ steps.app.outputs.token != '' && 'app' || (secrets.VEGA_PULL_TOKEN != '' && 'token' || 'workflow') }}
         run: |
           set -euo pipefail
           summary() { echo "$1" >> "$GITHUB_STEP_SUMMARY"; echo "$1"; }
@@ -141,12 +153,18 @@ jobs:
               fi
             done
             if grep -qE '(HTTP |returned error: )401|Authentication failed' "$GH_ERR"; then
-              echo "::error::$what: GitHub rejected the token (401). VEGA_PULL_TOKEN is invalid or expired; create a new one, see README 'First-time setup' step 4."
+              if [ "$TOKEN_SOURCE" = "app" ]; then
+                echo "::error::$what: GitHub rejected the GitHub App token (401). Check VEGA_PULL_APP_CLIENT_ID and VEGA_PULL_APP_PRIVATE_KEY, see README 'First-time setup' step 4."
+              else
+                echo "::error::$what: GitHub rejected the token (401). VEGA_PULL_TOKEN is invalid or expired; create a new one, see README 'First-time setup' step 4."
+              fi
             elif grep -qE '(HTTP |returned error: )403' "$GH_ERR"; then
-              if [ "$PULL_TOKEN_SET" = "true" ]; then
+              if [ "$TOKEN_SOURCE" = "app" ]; then
+                echo "::error::$what: GitHub refused (403). Check that the GitHub App has Contents and Pull requests read and write and is installed on this repository, see README 'First-time setup' step 4."
+              elif [ "$TOKEN_SOURCE" = "token" ]; then
                 echo "::error::$what: GitHub refused (403). Check that VEGA_PULL_TOKEN has contents and pull-requests write on this repository and that its resource owner is this organization, see README 'First-time setup' step 4."
               else
-                echo "::error::$what: GitHub refused (403). Set the VEGA_PULL_TOKEN secret, or allow GitHub Actions to create pull requests under Settings -> Actions -> General."
+                echo "::error::$what: GitHub refused (403). Set up a GitHub App or the VEGA_PULL_TOKEN secret, or allow GitHub Actions to create pull requests under Settings -> Actions -> General."
               fi
             else
               echo "::error::$what failed 3 times: $(tail -n 1 "$GH_ERR"). The next scheduled run retries."
@@ -230,8 +248,8 @@ jobs:
           git commit --quiet -m "Pull tenant changes from Vega"
           retry "git push" git_auth push --force --quiet origin "$PULL_BRANCH"
 
-          if [ "$PULL_TOKEN_SET" != "true" ]; then
-            echo "::warning::VEGA_PULL_TOKEN is not set, so the pull request is opened with the workflow's own token: no check runs on it, and a protected branch cannot merge it. See README 'First-time setup' step 4."
+          if [ "$TOKEN_SOURCE" = "workflow" ]; then
+            echo "::warning::Neither a GitHub App nor VEGA_PULL_TOKEN is set, so the pull request is opened with the workflow's own token: no check runs on it, and a protected branch cannot merge it. See README 'First-time setup' step 4."
           fi
           if [ -n "$open_pr" ]; then
             retry "gh pr edit" gh pr edit "$open_pr" --body-file "$RUNNER_TEMP/pr-body.md"

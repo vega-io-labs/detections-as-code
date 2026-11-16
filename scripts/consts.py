@@ -118,9 +118,11 @@ MEMORY_MANDATORY_FIELDS: tuple[str, ...] = ("title", "description", "content")
 # Memories have no externalId, so the sync recognises the memories it owns by
 # this label and matches each one to its YAML by title. Memories without the
 # label (written in the UI, learned by Vega) are never read, changed or
-# deleted.
-MANAGED_MEMORY_LABEL: str = "detections-as-code"
-MANAGED_MEMORY_LABEL_COLOR: str = "TEAL"
+# deleted. Detections get it too, only so people in the UI can see that a
+# detection is managed from the repo; the sync still matches them by
+# externalId.
+MANAGED_LABEL: str = "Managed by Git"
+MANAGED_LABEL_COLOR: str = "TEAL"
 
 MEMORY_TITLE_MAX_LEN: int = 150
 MEMORY_DESCRIPTION_MAX_LEN: int = 300

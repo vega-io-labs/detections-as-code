@@ -308,7 +308,7 @@ def test_fresh_memory_file():
     vega = make_vega_memory(
         enabled=False,
         expiresAt="2027-01-31T00:00:00Z",
-        labels=[{"id": MANAGED_LABEL_ID, "name": "detections-as-code"}, {"id": OTHER_LABEL_ID, "name": "Scanners"}],
+        labels=[{"id": MANAGED_LABEL_ID, "name": "Managed by Git"}, {"id": OTHER_LABEL_ID, "name": "Scanners"}],
     )
     text = render(memory_file(vega, None), None, MEMORY_KEY_ORDER)
     assert text == (
@@ -344,7 +344,7 @@ def test_memory_edit_keeps_equivalent_values_and_the_managed_label_out():
     vega = make_vega_memory(
         content="Changed in the UI.",
         expiresAt="2027-01-31T00:00:00Z",
-        labels=[{"id": OTHER_LABEL_ID, "name": "Scanners"}, {"id": MANAGED_LABEL_ID, "name": "detections-as-code"}],
+        labels=[{"id": OTHER_LABEL_ID, "name": "Scanners"}, {"id": MANAGED_LABEL_ID, "name": "Managed by Git"}],
     )
     text = render(memory_file(vega, yaml.safe_load(existing)), existing, MEMORY_KEY_ORDER)
     assert text == (

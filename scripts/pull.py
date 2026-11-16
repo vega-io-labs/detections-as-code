@@ -34,7 +34,7 @@ from rich.panel import Panel
 from rich.table import Table
 
 from .client import DEFAULT_TENANT_URL, VegaAPIError, VegaClient
-from .consts import MANAGED_MEMORY_LABEL, SKILL_FILE_NAME
+from .consts import MANAGED_LABEL, SKILL_FILE_NAME
 from .export import (
     DETECTION_KEY_ORDER,
     MEMORY_KEY_ORDER,
@@ -51,7 +51,7 @@ from .export import (
     verify_memory,
     verify_skill,
 )
-from .labels import label_ids_by_name
+from .labels import label_ids_by_name, managed_label_id
 from .memory_reconciler import (
     MemoriesUnavailable,
     MemoryState,
@@ -342,10 +342,10 @@ def pull_memories(
     Also returns notes for the files it deliberately leaves alone.
     """
     label_ids = label_ids_by_name(state.labels)
-    managed_id = label_ids.get(MANAGED_MEMORY_LABEL)
+    managed_id = managed_label_id(state.labels)
     if managed_id is None:
         return [], [
-            f"Memories were not pulled: the '{MANAGED_MEMORY_LABEL}' label does "
+            f"Memories were not pulled: the '{MANAGED_LABEL}' label does "
             f"not exist in the tenant yet, so no memory there belongs to this "
             f"repository. The first sync creates it."
         ]
@@ -420,7 +420,7 @@ def pull_memories(
         if title in tenant.unmanaged:
             notes.append(
                 f"{display_path(current.path)}: left in place. A memory titled {title!r} "
-                f"exists in the tenant without the '{MANAGED_MEMORY_LABEL}' "
+                f"exists in the tenant without the '{MANAGED_LABEL}' "
                 f"label; add the label in Vega to hand it to the sync, or "
                 f"delete one of the two."
             )

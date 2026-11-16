@@ -27,7 +27,7 @@ memories, so the sync deletes any memory it created before.
 
 Memories have no external id, so the sync relies on two things:
 
-1. **The `detections-as-code` label.** The sync creates this label the first
+1. **The `Managed by Git` label.** The sync creates this label the first
    time it creates a memory, and attaches it to every memory it writes. It
    only ever reads, updates and deletes memories that carry the label.
    Memories written in the Vega UI and memories Vega learns from analyst
@@ -148,7 +148,7 @@ Names of labels to attach. The labels must already exist in your tenant
 (create them in the Vega UI); a missing label blocks that one memory and the
 run reports it. Names match without regard to case.
 
-Do not list `detections-as-code`: the sync adds it to every memory it
+Do not list `Managed by Git`: the sync adds it to every memory it
 manages. The list replaces the labels attached in the UI on every sync.
 
 ## Limits
@@ -173,7 +173,7 @@ manages. The list replaces the labels attached in the UI on every sync.
 | `expiresAt` parses as ISO 8601 | PR red |
 | `expiresAt` in the past | PR yellow, warning only |
 | `entities` types, value lengths, at most 50, no case-insensitive duplicates | PR red |
-| `labels` non-empty, unique, without `detections-as-code` | PR red |
+| `labels` non-empty, unique, without `Managed by Git` | PR red |
 | Titles unique across `memories/` | PR red |
 | At most 250 enabled memories in `memories/` | PR red |
 | A title changed in this PR (a rename replaces the memory) | PR yellow, warning only |
@@ -185,7 +185,7 @@ manages. The list replaces the labels attached in the UI on every sync.
 | Memories are enabled for your organization and the access key may use them | The run stops the memory step with `memories are not available to this access key` |
 | Every name in `labels` exists in the tenant | That memory is reported as blocked; the others still sync |
 | The tenant stays within 250 active memories | `createMemoryPublic` / `updateMemoryPublic` reject with `MEMORY_LIMIT_REACHED` |
-| A file's title is not held by a memory without the `detections-as-code` label | That memory is reported as blocked; the others still sync |
+| A file's title is not held by a memory without the `Managed by Git` label | That memory is reported as blocked; the others still sync |
 
 ## Permissions
 
@@ -194,8 +194,8 @@ The access key needs four permissions to sync memories:
 | Permission | Used for |
 |---|---|
 | `AgentsRead` | Reading the tenant's memories |
-| `LabelsRead` | Reading the tenant's labels, to resolve each file's `labels` and find the `detections-as-code` label |
+| `LabelsRead` | Reading the tenant's labels, to resolve each file's `labels` and find the `Managed by Git` label |
 | `AgentsWrite` | Creating, updating and deleting memories |
-| `LabelsWrite` | Creating the `detections-as-code` label on the first sync |
+| `LabelsWrite` | Creating the `Managed by Git` label on the first sync |
 
 Without either read permission the run reports `memories are not available to this access key`. Without `LabelsWrite` the first creates fail and say so.

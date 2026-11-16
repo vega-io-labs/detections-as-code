@@ -27,6 +27,8 @@ from rich.panel import Panel
 from rich.table import Table
 
 from .client import DEFAULT_TENANT_URL, VegaAPIError, VegaClient
+from .consts import MANAGED_LABEL
+from .labels import ManagedLabel
 from .memory_reconciler import (
     MemoriesUnavailable,
     MemoryPlan,
@@ -42,12 +44,15 @@ from .reconciler import (
     DetectionPlan,
     build_plan,
     execute_plan,
+    label_managed_detections,
     load_yaml_detections,
+    unlabelled_detections,
 )
 from .skill_reconciler import (
     build_skill_plan,
     execute_skill_plan,
     hold_back_detections,
+    label_written_skills,
     load_skill_files,
     resolve_detection_skill_ids,
     skill_ids_by_external_id,
@@ -82,14 +87,20 @@ class Sync(ABC, Generic[P]):
     def build(self) -> None: ...
 
     @abstractmethod
-    def apply(self, client: VegaClient, plan: P, no_deletes: bool) -> SyncReport: ...
+    def apply(
+        self, client: VegaClient, plan: P, no_deletes: bool, label: ManagedLabel
+    ) -> SyncReport: ...
 
     def execute(
-        self, client: VegaClient, no_deletes: bool, report: SyncReport
+        self,
+        client: VegaClient,
+        no_deletes: bool,
+        report: SyncReport,
+        label: ManagedLabel,
     ) -> None:
         if self.plan is None:
             return
-        applied = self.apply(client, self.plan, no_deletes)
+        applied = self.apply(client, self.plan, no_deletes, label)
         report.results.extend(applied.results)
         report.errors.extend(applied.errors)
 
@@ -122,7 +133,9 @@ class SkillSync(Sync[Plan]):
     def build(self) -> None:
         self.plan = build_skill_plan(self.specs, self.vega)
 
-    def apply(self, client: VegaClient, plan: Plan, no_deletes: bool) -> SyncReport:
+    def apply(
+        self, client: VegaClient, plan: Plan, no_deletes: bool, label: ManagedLabel
+    ) -> SyncReport:
         report = execute_skill_plan(client, plan, skip_deletes=no_deletes)
         if any(r.kind == "create" and r.success for r in report.results):
             try:
@@ -134,7 +147,24 @@ class SkillSync(Sync[Plan]):
                 report.errors.append(
                     f"skills: could not re-read skills after creating them: {e}"
                 )
+        written = [
+            self.tenant_ids[r.external_id]
+            for r in report.results
+            if r.success
+            and r.kind in ("create", "update")
+            and r.external_id in self.tenant_ids
+        ]
+        label_written_skills(client, written, report, label)
         return report
+
+    def notes(self) -> list[str]:
+        plan = self.plan
+        if plan is None or not (plan.creates or plan.updates):
+            return []
+        return [
+            f"{len(plan.creates) + len(plan.updates)} skill(s) get the "
+            f"'{MANAGED_LABEL}' label after they are written."
+        ]
 
 
 class DetectionSync(Sync[DetectionPlan]):
@@ -186,9 +216,30 @@ class DetectionSync(Sync[DetectionPlan]):
         hold_back_detections(self.plan, unresolved)
 
     def apply(
-        self, client: VegaClient, plan: DetectionPlan, no_deletes: bool
+        self,
+        client: VegaClient,
+        plan: DetectionPlan,
+        no_deletes: bool,
+        label: ManagedLabel,
     ) -> SyncReport:
-        return execute_plan(client, plan, skip_deletes=no_deletes)
+        report = execute_plan(client, plan, skip_deletes=no_deletes)
+        label_managed_detections(self._managed_ids(), self.vega, report, client, label)
+        return report
+
+    def notes(self) -> list[str]:
+        if self.plan is None:
+            return []
+        to_label = len(unlabelled_detections(self.vega, self._managed_ids()))
+        to_label += len(self.plan.creates)
+        if not to_label:
+            return []
+        return [
+            f"{to_label} detection(s) get the '{MANAGED_LABEL}' label after "
+            f"they are written."
+        ]
+
+    def _managed_ids(self) -> set[str]:
+        return {str(doc["id"]) for doc in self.yamls}
 
 
 class MemorySync(Sync[MemoryPlan]):
@@ -226,15 +277,19 @@ class MemorySync(Sync[MemoryPlan]):
             )
 
     def apply(
-        self, client: VegaClient, plan: MemoryPlan, no_deletes: bool
+        self,
+        client: VegaClient,
+        plan: MemoryPlan,
+        no_deletes: bool,
+        label: ManagedLabel,
     ) -> SyncReport:
-        return execute_memory_plan(client, plan, skip_deletes=no_deletes)
+        return execute_memory_plan(client, plan, skip_deletes=no_deletes, label=label)
 
     def notes(self) -> list[str]:
         plan = self.plan
         if plan is not None and plan.managed_label_id is None and plan.creates:
             return [
-                "The 'detections-as-code' label does not exist yet; "
+                f"The '{MANAGED_LABEL}' label does not exist yet; "
                 "the sync creates it before the first memory."
             ]
         return []
@@ -336,6 +391,7 @@ def main(
     )
 
     report = SyncReport()
+    label = ManagedLabel(client)
     for kind in kinds:
         try:
             kind.fetch(client)
@@ -347,7 +403,7 @@ def main(
             # red when the sync after merge is bound to report them.
             report.add_blocked(kind.plan, kind.target)
             if not dry_run:
-                kind.execute(client, no_deletes, report)
+                kind.execute(client, no_deletes, report, label)
         except (VegaAPIError, RuntimeError) as e:
             console.print(f"[red]ERROR:[/] {kind.name}: {e}")
             report.errors.append(f"{kind.name}: {e}")

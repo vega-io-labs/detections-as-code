@@ -7,7 +7,7 @@ from typing import Any, Generic, Literal, TypeVar
 
 P = TypeVar("P")
 
-ActionKind = Literal["create", "update", "delete", "set_state"]
+ActionKind = Literal["create", "update", "delete", "set_state", "label"]
 Target = Literal["detection", "memory", "skill"]
 
 
@@ -56,6 +56,7 @@ class ActionResult:
     success: bool
     error: str | None = None
     target: Target = "detection"
+    object_id: str | None = None
 
 
 @dataclass

@@ -29,8 +29,8 @@ from ruamel.yaml.scalarstring import (
     ScalarString,
 )
 
-from .consts import MANAGED_MEMORY_LABEL, SEVERITY_MAP, UNCLEARABLE_TEXT_FIELDS
-from .labels import label_key
+from .consts import SEVERITY_MAP, UNCLEARABLE_TEXT_FIELDS
+from .labels import is_managed_label, label_key
 from .memory_reconciler import is_no_op as memory_is_no_op
 from .memory_translator import MemorySpec, parse_memory
 from .reconciler import (
@@ -457,7 +457,7 @@ def memory_file(
     labels = [
         label["name"]
         for label in vega.get("labels") or []
-        if label.get("name") and label_key(label["name"]) != MANAGED_MEMORY_LABEL
+        if label.get("name") and not is_managed_label(label["name"])
     ]
     _set_list(doc, "labels", _keep_order(labels, existing.get("labels"), _label_key), existing)
     return doc

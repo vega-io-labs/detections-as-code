@@ -123,7 +123,7 @@ def test_case_insensitive_duplicate_entity_is_rejected():
 def test_labels():
     assert parse_memory(make_memory_yaml(labels=["Scanners"]), "f").labels == ("Scanners",)
     with pytest.raises(ValueError, match="added by the sync"):
-        parse_memory(make_memory_yaml(labels=["detections-as-code"]), "f")
+        parse_memory(make_memory_yaml(labels=["managed by git"]), "f")
     with pytest.raises(ValueError, match="duplicated"):
         parse_memory(make_memory_yaml(labels=["a", "a"]), "f")
 

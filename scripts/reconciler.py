@@ -20,9 +20,10 @@ from typing import Any, Callable, Iterable
 
 import yaml
 
-from .client import VegaAPIError, VegaClient
-from .consts import UNCLEARABLE_TEXT_FIELDS
+from .client import MODIFY_LABELS_MAX, VegaAPIError, VegaClient
+from .consts import MANAGED_LABEL, UNCLEARABLE_TEXT_FIELDS
 from .consts import DetectionState
+from .labels import ManagedLabel, is_managed_label
 from .plan import ActionKind, ActionResult, Plan, Planned, SyncReport, Write
 from .translator import (
     frequency_interval_seconds,
@@ -300,6 +301,7 @@ def _apply_batched(
                         p["name"],
                         committed,
                         None if committed else rollback_note,
+                        object_id=(res.get("detection") or {}).get("id"),
                     )
                 )
             else:
@@ -392,3 +394,48 @@ def execute_plan(
                 )
 
     return report
+
+
+def unlabelled_detections(
+    vega_detections: list[dict[str, Any]], managed_ids: set[str]
+) -> list[dict[str, Any]]:
+    return [
+        d
+        for d in vega_detections
+        if d.get("externalId") in managed_ids
+        and not any(is_managed_label(lbl.get("name") or "") for lbl in d.get("labels") or [])
+    ]
+
+
+def label_managed_detections(
+    managed_ids: set[str],
+    vega_detections: list[dict[str, Any]],
+    report: SyncReport,
+    client: VegaClient,
+    label: ManagedLabel,
+) -> None:
+    missing = unlabelled_detections(vega_detections, managed_ids)
+    targets = {d["id"]: (d["externalId"], d.get("name") or d["externalId"]) for d in missing}
+    targets |= {
+        r.object_id: (r.external_id, r.name)
+        for r in report.results
+        if r.success and r.kind == "create" and r.object_id
+    }
+    if not targets:
+        return
+    try:
+        label_id = label.id()
+    except (VegaAPIError, RuntimeError) as e:
+        report.errors.append(
+            f"detections: could not add the '{MANAGED_LABEL}' label: {e}"
+        )
+        return
+
+    for batch in chunks(list(targets.items()), MODIFY_LABELS_MAX):
+        try:
+            client.attach_detection_labels([i for i, _ in batch], [label_id])
+            error = None
+        except (VegaAPIError, RuntimeError) as e:
+            error = f"could not add the '{MANAGED_LABEL}' label: {e}"
+        for _, (external_id, name) in batch:
+            report.add(ActionResult("label", external_id, name, error is None, error))

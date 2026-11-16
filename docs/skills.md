@@ -106,7 +106,7 @@ The PR check rejects a repository skill of any other type in `skillIds`. If a sk
 
 - **It manages every skill in the tenant that has an `id` (externalId).** That is how it recognises the skills it wrote, the same rule as detections. Skills made in the Vega UI have no `id`, and Vega library skills are read-only, so the sync never changes or deletes either. A skill some other tool or repository created through the API with an `externalId` does count as managed: if it has no `SKILL.md` here, the sync deletes it. Keep one repository per tenant for skills.
 - **The file is the source of truth.** Name, description, type and instructions are compared with the tenant on every run, and edits made in the UI are reverted on the next sync. Unchanged skills are skipped.
-- **Labels stay in the UI.** The sync never sends labels, so the labels you put on a skill in Vega are kept.
+- **Labels stay in the UI.** The sync adds the `Managed by Git` label to every skill it manages and never removes or replaces labels, so the labels you put on a skill in Vega are kept. A `SKILL.md` cannot set labels.
 - **Deleting the folder deletes the skill** on the next sync (unless `--no-deletes`). Remove its id from every detection's `skillIds` in the same pull request: the PR check fails while a detection still names it, and a detection that does fails to sync.
 - **A missing `skills/` folder turns skill sync off.** The template does not ship one; create it with your first skill. An empty folder means "manage zero skills" and deletes any skill this repository created earlier.
 - **Batches of 100, one result per skill.** Deletes run first, then updates, then creates. Each skill is applied on its own, so one rejected skill never blocks another.

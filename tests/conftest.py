@@ -42,6 +42,7 @@ def make_vega(**overrides: Any) -> dict[str, Any]:
         "actorFields": [],
         "targetFields": [],
         "skills": [],
+        "labels": [],
         "isAlwaysEscalatedToIncident": False,
         "webhookIds": [],
         "createdBy": {"principalType": "user"},
@@ -91,14 +92,14 @@ def make_vega_memory(**overrides: Any) -> dict[str, Any]:
             {"type": "DEVICE", "value": "scanner-01"},
             {"type": "IP", "value": "192.0.2.10"},
         ],
-        "labels": [{"id": MANAGED_LABEL_ID, "name": "detections-as-code"}],
+        "labels": [{"id": MANAGED_LABEL_ID, "name": "Managed by Git"}],
     }
     base.update(overrides)
     return base
 
 
 LABELS = [
-    {"id": MANAGED_LABEL_ID, "name": "detections-as-code"},
+    {"id": MANAGED_LABEL_ID, "name": "Managed by Git"},
     {"id": OTHER_LABEL_ID, "name": "Scanners"},
 ]
 

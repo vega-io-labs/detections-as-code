@@ -17,6 +17,10 @@ class FakeClient:
         self.fail = fail or set()
         self.calls: list[str] = []
         self.skills: list[dict[str, Any]] = []
+        self.detections: list[dict[str, Any]] = [make_vega()]
+        self.labels: list[dict[str, Any]] = []
+        self.attached: list[tuple[list[str], list[str]]] = []
+        self.skill_attached: list[tuple[list[str], list[str]]] = []
 
     def _step(self, op: str) -> None:
         self.calls.append(op)
@@ -42,15 +46,28 @@ class FakeClient:
 
     def get_detections(self):
         self._step("get_detections")
-        return [make_vega()]
+        return self.detections
+
+    def attach_skill_labels(self, skill_ids, label_ids):
+        self._step("attach_skill_labels")
+        self.skill_attached.append((skill_ids, label_ids))
+        return {"objectIds": skill_ids}
+
+    def attach_detection_labels(self, detection_ids, label_ids):
+        self._step("attach_detection_labels")
+        self.attached.append((detection_ids, label_ids))
+        return {"objectIds": detection_ids}
 
     def create_detections(self, detections):
         self._step("create_detections")
-        return {"results": [{"status": "VALID"} for _ in detections], "summary": {"committed": True}}
+        results = [{"status": "VALID", "detection": {"id": "new-" + d["externalId"]}} for d in detections]
+        return {"results": results, "summary": {"committed": True}}
 
     def update_detections(self, detections):
         self._step("update_detections")
-        return {"results": [{"status": "VALID"} for _ in detections], "summary": {"committed": True}}
+        ids = {d["externalId"]: d["id"] for d in self.detections}
+        results = [{"status": "VALID", "detection": {"id": ids[d["externalId"]]}} for d in detections]
+        return {"results": results, "summary": {"committed": True}}
 
     def get_memories(self):
         self._step("get_memories")
@@ -58,11 +75,13 @@ class FakeClient:
 
     def list_labels(self):
         self._step("list_labels")
-        return []
+        return self.labels
 
     def create_label(self, name, color):
         self._step("create_label")
-        return {"id": "label", "name": name}
+        label = {"id": "label", "name": name}
+        self.labels = [*self.labels, label]
+        return label
 
     def create_memory(self, memory):
         self._step("create_memory")
@@ -98,7 +117,11 @@ def test_skill_then_detection_naming_it_in_one_run(repo, monkeypatch):
     client = FakeClient()
     result = run(repo, client, monkeypatch)
     assert result.exit_code == 0, result.output
-    assert client.calls[:4] == ["get_skills", "create_skills", "get_skills", "get_detections"]
+    assert client.calls[:6] == [
+        "get_skills", "create_skills", "get_skills",
+        "list_labels", "create_label", "attach_skill_labels",
+    ]
+    assert client.calls[6] == "get_detections"
     assert "update_detections" in client.calls
 
 
@@ -180,3 +203,138 @@ def test_dry_run_with_blocked_entries_fails(repo, monkeypatch, tmp_path):
     assert "create_skills" not in client.calls
     text = summary.read_text()
     assert "dry run: 0 ok, 2 failed" in text and "Skill plan: creates=0 updates=0 deletes=0 blocked=1" in text
+
+
+MANAGED = {"id": "managed-label", "name": "Managed by Git"}
+
+
+def test_a_managed_detection_without_the_label_gets_it(repo, monkeypatch):
+    client = FakeClient()
+    client.labels = [MANAGED]
+    result = run(repo, client, monkeypatch)
+    assert result.exit_code == 0, result.output
+    assert client.attached == [([make_vega()["id"]], ["managed-label"])]
+    assert "create_label" not in client.calls
+
+
+def test_the_label_is_created_when_the_tenant_has_none(repo, monkeypatch):
+    client = FakeClient()
+    result = run(repo, client, monkeypatch)
+    assert result.exit_code == 0, result.output
+    assert client.calls.count("create_label") == 1
+    assert client.attached == [([make_vega()["id"]], ["label"])]
+
+
+def test_labelling_needs_no_second_read_of_the_tenant(repo, monkeypatch):
+    client = FakeClient()
+    client.labels = [MANAGED]
+    result = run(repo, client, monkeypatch)
+    assert result.exit_code == 0, result.output
+    assert client.calls.count("get_detections") == 1
+    assert client.attached == [([make_vega()["id"]], ["managed-label"])]
+
+
+def test_an_updated_detection_that_has_the_label_is_not_sent(repo, monkeypatch):
+    client = FakeClient()
+    client.labels = [MANAGED]
+    client.detections = [make_vega(labels=[MANAGED])]
+    result = run(repo, client, monkeypatch)
+    assert result.exit_code == 0, result.output
+    assert "update_detections" in client.calls
+    assert "attach_detection_labels" not in client.calls
+
+def test_a_new_detection_is_labelled_by_the_id_the_create_returned(repo, monkeypatch):
+    (repo / "detections" / "n.yaml").write_text(yaml.safe_dump(make_yaml(id="brand-new", name="Brand new")))
+    client = FakeClient()
+    client.labels = [MANAGED]
+    result = run(repo, client, monkeypatch)
+    assert result.exit_code == 0, result.output
+    assert "new-brand-new" in client.attached[0][0]
+
+def test_an_already_labelled_detection_needs_no_label_call(repo, monkeypatch):
+    (repo / "detections" / "d.yaml").write_text(yaml.safe_dump(make_yaml()))
+    client = FakeClient()
+    client.detections = [make_vega(labels=[{"id": "x", "name": "managed BY git"}])]
+    result = run(repo, client, monkeypatch)
+    assert result.exit_code == 0, result.output
+    assert "attach_detection_labels" not in client.calls
+    assert client.calls.count("get_detections") == 1
+
+
+def test_a_detection_the_repo_does_not_manage_is_never_labelled(repo, monkeypatch):
+    client = FakeClient()
+    client.labels = [MANAGED]
+    client.detections = [make_vega(), make_vega(id="ui", externalId="ui-made")]
+    result = run(repo, client, monkeypatch, "--no-deletes")
+    assert result.exit_code == 0, result.output
+    assert client.attached == [([make_vega()["id"]], ["managed-label"])]
+
+
+def test_a_label_failure_fails_the_run_but_keeps_the_writes(repo, monkeypatch):
+    client = FakeClient(fail={"attach_detection_labels"})
+    client.labels = [MANAGED]
+    result = run(repo, client, monkeypatch)
+    assert result.exit_code == 1
+    assert "update_detections" in client.calls
+    assert "failed=1" in result.output and "│ label " in result.output
+
+
+def test_dry_run_says_which_detections_get_the_label(repo, monkeypatch):
+    client = FakeClient()
+    result = run(repo, client, monkeypatch, "--dry-run")
+    assert result.exit_code == 0, result.output
+    assert "1 detection(s) get the 'Managed by Git' label" in result.output
+    assert "attach_detection_labels" not in client.calls
+
+
+def test_a_created_skill_gets_the_label(repo, monkeypatch):
+    client = FakeClient()
+    client.labels = [MANAGED]
+    result = run(repo, client, monkeypatch)
+    assert result.exit_code == 0, result.output
+    assert client.skill_attached == [(["tenant-" + SKILL_ID], ["managed-label"])]
+
+
+def test_an_unchanged_skill_is_not_sent_again(repo, monkeypatch):
+    client = FakeClient()
+    client.labels = [MANAGED]
+    client.skills = [make_vega_skill(externalId=SKILL_ID)]
+    result = run(repo, client, monkeypatch)
+    assert result.exit_code == 0, result.output
+    assert "update_skills" not in client.calls and "create_skills" not in client.calls
+    assert "attach_skill_labels" not in client.calls
+
+
+def test_an_updated_skill_gets_it_and_a_ui_skill_never_does(repo, monkeypatch):
+    client = FakeClient()
+    client.labels = [MANAGED]
+    client.skills = [
+        make_vega_skill(externalId=SKILL_ID, description="changed in the UI"),
+        make_vega_skill(id="ui", externalId=None, name="UI skill"),
+    ]
+    result = run(repo, client, monkeypatch)
+    assert result.exit_code == 0, result.output
+    assert client.skill_attached == [([client.skills[0]["id"]], ["managed-label"])]
+
+
+def test_the_label_is_looked_up_once_per_run(repo, monkeypatch):
+    client = FakeClient()
+    client.labels = [MANAGED]
+    run(repo, client, monkeypatch)
+    assert client.skill_attached and client.attached
+    assert client.calls.count("list_labels") == 2  # once for the label, once by the memory sync for file labels
+
+def test_a_skill_label_failure_fails_the_run_but_keeps_detections(repo, monkeypatch):
+    client = FakeClient(fail={"attach_skill_labels"})
+    client.labels = [MANAGED]
+    result = run(repo, client, monkeypatch)
+    assert result.exit_code == 1
+    assert "update_detections" in client.calls
+    assert "skills: could not add the 'Managed by Git' label" in result.output
+
+
+def test_dry_run_labels_no_skill(repo, monkeypatch):
+    client = FakeClient()
+    result = run(repo, client, monkeypatch, "--dry-run")
+    assert result.exit_code == 0, result.output
+    assert "attach_skill_labels" not in client.calls

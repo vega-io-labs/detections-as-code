@@ -75,17 +75,25 @@ _ERROR_HINTS: dict[str, str] = {
 }
 
 
+# A permission named in an access-denied hint: one name, or several the call
+# needs together.
+Permission = str | tuple[str, ...]
+
+MODIFY_LABELS_MAX = 100  # modifyObjectLabels objectIds cap per call
+
 class VegaAPIError(RuntimeError):
     def __init__(
         self,
         message: str,
         errors: list[dict[str, Any]] | None = None,
-        permission: str | None = None,
+        permission: Permission | None = None,
     ) -> None:
         self.errors = errors or []
         hints = [_ERROR_HINTS[c] for c in sorted(self.codes) if c in _ERROR_HINTS]
         if permission and ACCESS_DENIED in self.codes:
-            hints.append(f"the access key needs the {permission} permission")
+            names = (permission,) if isinstance(permission, str) else tuple(permission)
+            noun = "permission" if len(names) == 1 else "permissions"
+            hints.append(f"the access key needs the {' and '.join(names)} {noun}")
         super().__init__("; ".join([message, *hints]))
 
     @property
@@ -214,7 +222,7 @@ class VegaClient:
         self,
         query_str: str,
         variables: dict[str, Any],
-        permission: str | None = None,
+        permission: Permission | None = None,
     ) -> dict[str, Any]:
         if self._client is None:
             raise RuntimeError(
@@ -239,7 +247,7 @@ class VegaClient:
         items_key: str,
         variables: dict[str, Any],
         page_size: int,
-        permission: str | None = None,
+        permission: Permission | None = None,
     ) -> list[dict[str, Any]]:
         items: list[dict[str, Any]] = []
         offset = 0
@@ -283,6 +291,7 @@ class VegaClient:
               actorFields
               targetFields
               skills { id }
+              labels { id name }
               isAlwaysEscalatedToIncident
               webhookIds
               createdBy { principalType }
@@ -423,6 +432,42 @@ class VegaClient:
         }
         """
         return self._execute(query, {}, "LabelsRead")["listLabels"]
+
+    def attach_detection_labels(
+        self, detection_ids: list[str], label_ids: list[str]
+    ) -> dict[str, Any]:
+        return self._attach_labels("DETECTION_INSTANCE", detection_ids, label_ids, "LabelsWrite")
+
+    def attach_skill_labels(
+        self, skill_ids: list[str], label_ids: list[str]
+    ) -> dict[str, Any]:
+        # A tenant's own skill is a notebook cell, labelled as AGENTIC;
+        # LIBRARY_SKILL is only Vega's library skills.
+        return self._attach_labels(
+            "AGENTIC", skill_ids, label_ids, ("AgentsWrite", "LabelsWrite")
+        )
+
+    def _attach_labels(
+        self,
+        object_type: str,
+        object_ids: list[str],
+        label_ids: list[str],
+        permission: Permission,
+    ) -> dict[str, Any]:
+        query = """
+        mutation AttachLabels($input: ModifyObjectLabelsInput!) {
+          modifyObjectLabels(input: $input) { objectIds }
+        }
+        """
+        variables = {
+            "input": {
+                "objectIds": object_ids,
+                "objectType": object_type,
+                "labelIds": label_ids,
+                "action": "ATTACH",
+            }
+        }
+        return self._execute(query, variables, permission)["modifyObjectLabels"]
 
     def create_label(self, name: str, color: str) -> dict[str, Any]:
         query = """
