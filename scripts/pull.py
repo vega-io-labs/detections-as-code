@@ -55,6 +55,7 @@ from .labels import label_ids_by_name
 from .memory_reconciler import (
     MemoriesUnavailable,
     MemoryState,
+    TenantMemories,
     fetch_memory_state,
     index_by_title,
 )
@@ -73,7 +74,7 @@ console = Console()
 
 _STEP_SUMMARY_WIDTH = 160
 
-Action = Literal["add", "update", "remove"]
+Action = Literal["add", "update", "remove", "rename"]
 
 
 @dataclass(frozen=True)
@@ -85,6 +86,19 @@ class Change:
     name: str
     detail: str = ""
     text: str | None = None
+    new_path: Path | None = None
+
+    @property
+    def written_to(self) -> Path:
+        return self.new_path or self.path
+
+
+def display_path(path: Path) -> str:
+    """The path as the repository knows it, not as the runner mounted it."""
+    cwd = Path.cwd()
+    if path.is_absolute() and path.is_relative_to(cwd):
+        path = path.relative_to(cwd)
+    return path.as_posix()
 
 
 @dataclass
@@ -338,6 +352,7 @@ def pull_memories(
     files = {f.spec.title: f for f in _load_memory_files(dirs)}
     tenant = index_by_title(state.memories, managed_id)
     taken = {f.path for f in files.values()}
+    renamed = _renamed_memory(files, tenant)
     changes: list[Change] = []
     notes: list[str] = []
 
@@ -345,9 +360,27 @@ def pull_memories(
         current = files.get(title)
         if current is not None and memory_matches(current.spec, vega, label_ids, managed_id):
             continue
+        if current is None and title in renamed:
+            current = renamed[title]
         doc = memory_file(vega, current.doc if current else None)
         text = render(doc, current.text if current else None, MEMORY_KEY_ORDER)
         memory_id = vega.get("vegaMemoryId") or ""
+        if title in renamed:
+            path = _renamed_path(current.path, current.spec.title, title, taken)
+            verify_memory(text, vega, str(path), label_ids, managed_id)
+            changes.append(
+                Change(
+                    "memory",
+                    "rename",
+                    current.path,
+                    memory_id,
+                    title,
+                    f"was {current.spec.title!r}",
+                    text,
+                    new_path=path,
+                )
+            )
+            continue
         if current is None:
             stem = slug(title) or slug(memory_id) or "memory"
             path = _new_path(
@@ -380,13 +413,13 @@ def pull_memories(
             )
 
     for title, current in files.items():
-        if title in tenant.managed:
+        if title in tenant.managed or current in renamed.values():
             continue
         # The sync blocks on this file rather than creating a duplicate, and
         # deleting it here would silently settle that in the UI's favour.
         if title in tenant.unmanaged:
             notes.append(
-                f"{current.path}: left in place. A memory titled {title!r} "
+                f"{display_path(current.path)}: left in place. A memory titled {title!r} "
                 f"exists in the tenant without the '{MANAGED_MEMORY_LABEL}' "
                 f"label; add the label in Vega to hand it to the sync, or "
                 f"delete one of the two."
@@ -394,6 +427,44 @@ def pull_memories(
             continue
         changes.append(Change("memory", "remove", current.path, "", title))
     return changes, notes
+
+
+def _renamed_memory(
+    files: dict[str, _MemoryFile], tenant: TenantMemories
+) -> dict[str, _MemoryFile]:
+    """The one file whose memory was retitled in Vega, keyed by the new title.
+
+    Memories carry no id in the file, so a retitle looks like a delete plus a
+    create. When exactly one file and one tenant memory are left unmatched
+    and share their content, it is the same memory.
+    """
+    missing = [t for t in tenant.managed if t not in files]
+    orphans = [
+        f
+        for t, f in files.items()
+        if t not in tenant.managed and t not in tenant.unmanaged
+    ]
+    if len(missing) != 1 or len(orphans) != 1:
+        return {}
+    content = (tenant.managed[missing[0]].get("content") or "").strip()
+    if content != orphans[0].spec.content:
+        return {}
+    return {missing[0]: orphans[0]}
+
+
+def _renamed_path(
+    path: Path, old_title: str, new_title: str, taken: set[Path]
+) -> Path:
+    # A file named after its title follows the title; a name someone chose
+    # by hand stays.
+    if path.stem != slug(old_title):
+        return path
+    stem = slug(new_title) or path.stem
+    taken.discard(path)
+    return _new_path(
+        taken,
+        (path.with_name(f"{stem}{path.suffix}"), path.with_name(f"{stem}-renamed{path.suffix}"), path),
+    )
 
 
 # --------------------------------------------------------------------------
@@ -429,18 +500,30 @@ def apply_changes(changes: list[Change], skill_roots: Iterable[Path]) -> None:
             else:
                 change.path.unlink(missing_ok=True)
         else:
-            change.path.parent.mkdir(parents=True, exist_ok=True)
-            change.path.write_text(change.text or "", encoding="utf-8")
+            target = change.written_to
+            target.parent.mkdir(parents=True, exist_ok=True)
+            target.write_text(change.text or "", encoding="utf-8")
+            if target != change.path:
+                change.path.unlink(missing_ok=True)
 
 
 def _detail(change: Change) -> str:
     if change.action == "update":
         return change.detail
-    return str(change.path)
+    where = display_path(change.path)
+    if change.action == "rename":
+        if change.written_to != change.path:
+            where = f"{where} moved to {display_path(change.written_to)}"
+        return f"{change.detail}; {where}"
+    return where
 
 
 def _cell(text: str) -> str:
     return text.replace("|", "\\|").replace("\n", " ")
+
+
+def _id_cell(external_id: str) -> str:
+    return f"`{_cell(external_id)}`" if external_id else "-"
 
 
 def pr_body(report: PullReport, tenant_url: str, now: datetime | None = None) -> str:
@@ -457,7 +540,7 @@ def pr_body(report: PullReport, tenant_url: str, now: datetime | None = None) ->
         ]
         for change in report.changes:
             lines.append(
-                f"| {change.target} | {change.action} | `{_cell(change.external_id)}` "
+                f"| {change.target} | {change.action} | {_id_cell(change.external_id)} "
                 f"| {_cell(change.name)} | {_cell(_detail(change))} |"
             )
         lines.append("")
@@ -479,7 +562,8 @@ def pr_body(report: PullReport, tenant_url: str, now: datetime | None = None) ->
         "A removed file means the object is no longer in the tenant. If the "
         "file was added to the repository recently, check that the sync run "
         "after its merge succeeded before merging the removal: a failed "
-        "create looks the same as a deletion from here.",
+        "create looks the same as a deletion from here. A memory retitled in "
+        "Vega shows as a rename, since its file carries no id.",
     ]
     return "\n".join(lines) + "\n"
 
@@ -491,12 +575,12 @@ def _changes_table(report: PullReport) -> Table:
     t.add_column("Id")
     t.add_column("Name")
     t.add_column("Details")
-    colours = {"add": "green", "update": "yellow", "remove": "red"}
+    colours = {"add": "green", "update": "yellow", "remove": "red", "rename": "cyan"}
     for change in report.changes:
         t.add_row(
             change.target,
             f"[{colours[change.action]}]{change.action}[/]",
-            change.external_id,
+            change.external_id or "-",
             change.name,
             _detail(change),
         )
@@ -514,7 +598,7 @@ def _render_text(*renderables: object) -> str:
 def _counts(report: PullReport) -> str:
     return " ".join(
         f"{action}={sum(1 for c in report.changes if c.action == action)}"
-        for action in ("add", "update", "remove")
+        for action in ("add", "update", "rename", "remove")
     )
 
 

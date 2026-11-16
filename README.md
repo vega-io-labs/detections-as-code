@@ -40,7 +40,8 @@ Before adopting Detection-as-Code, ensure the following are in place:
 
 4. (Optional) Let changes made in Vega flow back into the repository:
    - Add a `VEGA_PULL_TOKEN` repository secret: a fine-grained personal access token or GitHub App token with `contents: write` and `pull-requests: write` on this repository. The `Pull tenant changes into a pull request` workflow opens its pull requests with it, so the `Validate PR` check runs on them. With the workflow's own token instead, no check runs on those pull requests, and a `main` protected as in step 3 can never merge them.
-   - Alternative, when a check on the pull request is not needed: Settings → Actions → General → Workflow permissions → tick **Allow GitHub Actions to create and approve pull requests**. Many organizations lock this setting; the token works regardless.
+   - When you create the token, pick your **organization** as the resource owner (not your personal account, and watch for an organization named like the repository). Some organizations require an admin to approve fine-grained tokens before they work. Fine-grained tokens expire; when the workflow reports a 401, create a new one and update the secret.
+   - Alternative, when a check on the pull request is not needed: Settings → Actions → General → Workflow permissions → tick **Allow GitHub Actions to create and approve pull requests**. Many organizations lock this setting, sometimes at the enterprise level; the token works regardless.
    - GitHub: Actions tab → enable the workflow. Scheduled workflows are off in a fresh fork until you enable them, and GitHub pauses them after 60 days without a commit; a manual run from the Actions tab turns them back on.
 
 The workflows target `https://app.vega.io` and are ready to use once the access key is set. No additional tenant configuration is required.
@@ -350,9 +351,10 @@ Every 10 hours, or when you run it from the Actions tab, the workflow logs in wi
 | A detection was created in the UI or through the API | A new file `detections/<name>.yaml` is added, with the detection's own id. Vega library detections are not pulled; a skill made in the UI (no `id`) and a memory without the `detections-as-code` label are not pulled either, exactly as the sync does not touch them. |
 | A skill or memory the repository manages was created through the API | A new `skills/<name>/SKILL.md` or `memories/<title>.yaml` is added. |
 | A detection, skill or memory was deleted | Its file is removed; for a skill, the whole folder of its `SKILL.md`. A file whose title matches a memory that lost its label is left in place and noted, because the sync blocks on it rather than creating a duplicate. |
+| A memory was retitled | Memory files carry no id, so a retitle would read as a deletion plus a creation. When exactly one file and one memory are left unmatched with the same content, the file is edited in place instead (comments kept) and shown as a rename; a file named after its old title is renamed after the new one. |
 | A detection the API accepted but this repository's lint rejects | It is listed under **Not pulled** in the pull request and the run summary, with the reason, and everything else is still pulled. |
 
-When the working tree differs from `main`, the changes are committed to the `vega/tenant-changes` branch and opened as a pull request titled **Pull tenant changes from Vega**. The description lists every object with what changed. Later runs rebuild the branch from `main` and force-push it only when the files actually moved, so one open pull request tracks the current drift; when the tenant matches `main` again, the pull request is closed. If someone pushed a commit of their own to that pull request, it is not rebuilt: the workflow comments once that new changes are waiting, and carries on after the pull request is merged or closed.
+When the working tree differs from `main`, the changes are committed to the `vega/tenant-changes` branch and opened as a pull request titled **Pull tenant changes from Vega**. The description lists every object with what changed. Later runs rebuild the branch from `main` and force-push it only when the files actually moved, so one open pull request tracks the current drift; when the tenant matches `main` again, the pull request is closed. If someone pushed a commit of their own to that pull request, it is not rebuilt: the workflow comments once that new changes are waiting, and carries on after the pull request is merged or closed. If `main` moved while the run was reading the tenant, the run stops without writing and the next one starts from the new commit. Pushes and GitHub calls are retried three times before the run gives up until its next schedule.
 
 The pull does not read the tenant while a sync is running, nor after a sync that failed, because then the tenant is behind the repository and a create the API rejected would look like a deletion made in Vega. The run says so in its summary and tries again next time; fix the sync or run `Sync ALL` to unblock it.
 
@@ -362,6 +364,16 @@ Reviewing the pull request is the policy decision:
 - **Run `Sync ALL detections, skills and memories`** with `dry_run` and `no_deletes` off to reject it. The sync writes the repository's version back to the tenant, and the pull request closes itself on the next run. Closing the pull request by hand works too: the same changes are not opened again until the tenant changes once more. Leaving it open while the tenant keeps changing is fine as well: it is updated in place.
 
 Who made the change is not in the pull request. The sync and pull use one access key, so the API reports that key as the author; the detection's version-history pane in Vega names the person.
+
+### First import from an existing tenant
+
+If the tenant already holds custom detections when you adopt this repository, the pull is the way to bring them in; `Sync ALL` goes the other way and would delete them.
+
+1. Run **Pull tenant changes into a pull request** by hand (Actions → the workflow → Run workflow). It opens one pull request that adds a file for every custom detection in the tenant, including the ones made in the Vega UI (Vega gives those an `externalId` equal to their id, so the sync manages them from then on).
+2. Vega library detections are not included. Skills are pulled only if a `skills/` folder exists in the repository, memories only if they carry the `detections-as-code` label.
+3. The template's example detection, `detections/mimikatz-credential-theft-crowdstrike.yaml`, shows up as a removal when the tenant does not have it. Delete the file before the first pull, or keep it by restoring the file in the pull request.
+4. On a large tenant the pull request is large, and every check that runs on pull requests runs on all of it, so expect it to take a while.
+5. After merging, the sync that follows should plan nothing. A `Sync ALL` dry run confirms it.
 
 Three things to know about:
 

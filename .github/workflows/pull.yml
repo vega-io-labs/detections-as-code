@@ -122,6 +122,35 @@ jobs:
         run: |
           set -euo pipefail
           summary() { echo "$1" >> "$GITHUB_STEP_SUMMARY"; echo "$1"; }
+          # GitHub blips (a 502 on a push or a gh call) would otherwise cost a
+          # whole schedule cycle. A rejected token is not retried: it will not
+          # get better, and the message should say what to do instead.
+          GH_ERR="$RUNNER_TEMP/gh.err"
+          retry() {
+            local what=$1 n
+            shift
+            for n in 1 2 3; do
+              if "$@" 2>"$GH_ERR"; then cat "$GH_ERR" >&2; return 0; fi
+              cat "$GH_ERR" >&2
+              if grep -qE '(HTTP |returned error: )40[13]|Authentication failed' "$GH_ERR"; then break; fi
+              if [ "$n" -lt 3 ]; then
+                echo "$what failed (try $n of 3), retrying in $((n * 10))s"
+                sleep $((n * 10))
+              fi
+            done
+            if grep -qE '(HTTP |returned error: )401|Authentication failed' "$GH_ERR"; then
+              echo "::error::$what: GitHub rejected the token (401). VEGA_PULL_TOKEN is invalid or expired; create a new one, see README 'First-time setup' step 4."
+            elif grep -qE '(HTTP |returned error: )403' "$GH_ERR"; then
+              if [ "$PULL_TOKEN_SET" = "true" ]; then
+                echo "::error::$what: GitHub refused (403). Check that VEGA_PULL_TOKEN has contents and pull-requests write on this repository and that its resource owner is this organization, see README 'First-time setup' step 4."
+              else
+                echo "::error::$what: GitHub refused (403). Set the VEGA_PULL_TOKEN secret, or allow GitHub Actions to create pull requests under Settings -> Actions -> General."
+              fi
+            else
+              echo "::error::$what failed 3 times: $(tail -n 1 "$GH_ERR"). The next scheduled run retries."
+            fi
+            return 1
+          }
           # Same mechanism actions/checkout uses: the token travels in a header
           # for this one command and never lands in .git/config or a URL.
           auth="http.https://github.com/.extraheader=AUTHORIZATION: basic $(printf 'x-access-token:%s' "$GH_TOKEN" | base64 | tr -d '\n')"
@@ -140,20 +169,31 @@ jobs:
             [ -d "$folder" ] && git add -A "$folder"
           done
           new_tree=$(drift_tree "$(git write-tree)")
+
+          # A merge that landed while this run was reading the tenant is in
+          # the tenant but not in this checkout, so it would show up here as
+          # a change made in Vega. Start over from the new commit instead.
+          retry "git fetch" git_auth fetch --quiet origin "$GITHUB_REF_NAME"
+          if [ "$(git rev-parse "origin/$GITHUB_REF_NAME")" != "$GITHUB_SHA" ]; then
+            summary "\`$GITHUB_REF_NAME\` moved while this run was reading the tenant, so the result may mix in that merge. Skipping; the next run starts from the new commit."
+            echo "::notice::$GITHUB_REF_NAME moved during the run; pulling on the next run."
+            exit 0
+          fi
+
           open_pr=$(gh pr list --head "$PULL_BRANCH" --base "$GITHUB_REF_NAME" \
             --state open --json number --jq '.[0].number // empty')
 
           if git diff --cached --quiet; then
             summary "The repository matches the tenant."
             if [ -n "$open_pr" ]; then
-              gh pr close "$open_pr" --delete-branch \
+              retry "gh pr close" gh pr close "$open_pr" --delete-branch \
                 --comment "The tenant matches \`$GITHUB_REF_NAME\` again, so there is nothing left to pull."
             fi
             exit 0
           fi
 
           if [ -n "$open_pr" ]; then
-            git_auth fetch --quiet origin "+refs/heads/$PULL_BRANCH:refs/remotes/origin/$PULL_BRANCH"
+            retry "git fetch" git_auth fetch --quiet origin "+refs/heads/$PULL_BRANCH:refs/remotes/origin/$PULL_BRANCH"
             if [ "$(drift_tree "refs/remotes/origin/$PULL_BRANCH")" = "$new_tree" ]; then
               summary "Pull request #$open_pr already carries these changes."
               exit 0
@@ -165,7 +205,7 @@ jobs:
             if [ -n "$others" ]; then
               marker="<!-- vega-pull: waiting -->"
               if ! gh pr view "$open_pr" --json comments --jq '.comments[].body' | grep -qF "$marker"; then
-                gh pr comment "$open_pr" --body "$marker New changes made in Vega are waiting. This pull request carries commits the pull workflow did not make, so it is not rebuilt until it is merged or closed."
+                retry "gh pr comment" gh pr comment "$open_pr" --body "$marker New changes made in Vega are waiting. This pull request carries commits the pull workflow did not make, so it is not rebuilt until it is merged or closed."
               fi
               summary "Pull request #$open_pr has commits by $(echo "$others" | paste -sd, -); not rebuilding it. New tenant changes wait until it is merged or closed."
               exit 0
@@ -186,20 +226,21 @@ jobs:
           git config user.email "$BOT_EMAIL"
           git checkout --quiet -B "$PULL_BRANCH"
           git commit --quiet -m "Pull tenant changes from Vega"
-          git_auth push --force --quiet origin "$PULL_BRANCH"
+          retry "git push" git_auth push --force --quiet origin "$PULL_BRANCH"
 
           if [ "$PULL_TOKEN_SET" != "true" ]; then
             echo "::warning::VEGA_PULL_TOKEN is not set, so the pull request is opened with the workflow's own token: no check runs on it, and a protected branch cannot merge it. See README 'First-time setup' step 4."
           fi
           if [ -n "$open_pr" ]; then
-            gh pr edit "$open_pr" --body-file "$RUNNER_TEMP/pr-body.md"
+            retry "gh pr edit" gh pr edit "$open_pr" --body-file "$RUNNER_TEMP/pr-body.md"
             summary "Updated pull request #$open_pr."
           else
-            if ! url=$(gh pr create --base "$GITHUB_REF_NAME" --head "$PULL_BRANCH" \
+            if ! url=$(retry "gh pr create" gh pr create --base "$GITHUB_REF_NAME" --head "$PULL_BRANCH" \
               --title "Pull tenant changes from Vega" \
               --body-file "$RUNNER_TEMP/pr-body.md"); then
-              git_auth push --quiet origin --delete "$PULL_BRANCH"
-              echo "::error::Could not open the pull request. Set the VEGA_PULL_TOKEN secret, or allow GitHub Actions to create pull requests under Settings -> Actions -> General."
+              # Nothing half-made: the branch goes with the pull request that
+              # never opened, and the next run rebuilds both.
+              git_auth push --quiet origin --delete "$PULL_BRANCH" || true
               exit 1
             fi
             summary "Opened $url."

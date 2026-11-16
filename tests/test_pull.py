@@ -307,3 +307,49 @@ def test_removing_a_skill_takes_its_folder_but_never_the_root(repo, monkeypatch)
     assert result.exit_code == 0, result.output
     assert not (repo / "skills" / "triage").exists()
     assert (repo / "skills").is_dir() and not (repo / "skills" / "SKILL.md").exists()
+
+
+def test_paths_in_the_table_are_repository_paths(repo, monkeypatch, tmp_path):
+    monkeypatch.chdir(repo)
+    client = FakeClient()
+    client.detections = []
+    client.memories = []
+    body = tmp_path / "body.txt"
+    result = run(repo, client, monkeypatch, "--pr-body-file", str(body))
+    assert result.exit_code == 0, result.output
+    text = body.read_text()
+    assert "| detection | remove | `" + YAML_ID + "` | Root login | detections/root-login.yaml |" in text
+    assert "| memory | remove | - | Approved vulnerability scanner | memories/scanner.yaml |" in text
+    assert str(repo) not in text
+
+
+def test_a_retitled_memory_is_a_rename_that_keeps_the_file(repo):
+    (repo / "memories" / "scanner.yaml").write_text(
+        "# why this memory exists\n" + yaml.safe_dump(make_memory_yaml())
+    )
+    retitled = make_vega_memory(title="Approved scanner, renamed")
+    changes, notes = pull_memories(dirs(repo, "memories"), state([retitled]))
+    assert notes == []
+    assert [(c.action, c.external_id, c.name, c.detail) for c in changes] == [
+        ("rename", "MEM-K7QX2", "Approved scanner, renamed", "was 'Approved vulnerability scanner'")
+    ]
+    assert changes[0].written_to == repo / "memories" / "scanner.yaml"
+    assert changes[0].text.startswith("# why this memory exists\n")
+    assert yaml.safe_load(changes[0].text)["title"] == "Approved scanner, renamed"
+
+
+def test_a_retitled_memory_in_a_file_named_after_it_moves(repo):
+    (repo / "memories" / "scanner.yaml").rename(repo / "memories" / "approved-vulnerability-scanner.yaml")
+    retitled = make_vega_memory(title="Approved scanner, renamed")
+    changes, _ = pull_memories(dirs(repo, "memories"), state([retitled]))
+    assert changes[0].action == "rename"
+    assert changes[0].written_to == repo / "memories" / "approved-scanner-renamed.yaml"
+    pull.apply_changes(changes, [])
+    assert not (repo / "memories" / "approved-vulnerability-scanner.yaml").exists()
+    assert yaml.safe_load((repo / "memories" / "approved-scanner-renamed.yaml").read_text())["title"] == "Approved scanner, renamed"
+
+
+def test_different_content_is_not_a_rename(repo):
+    other = make_vega_memory(title="Something else", content="Different content")
+    changes, _ = pull_memories(dirs(repo, "memories"), state([other]))
+    assert sorted(c.action for c in changes) == ["add", "remove"]
