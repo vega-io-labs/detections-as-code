@@ -20,7 +20,9 @@ from __future__ import annotations
 from pathlib import Path
 from typing import Any, Callable, Iterable
 
-from .client import VegaAPIError, VegaClient
+from .client import MODIFY_LABELS_MAX, VegaAPIError, VegaClient
+from .consts import MANAGED_LABEL
+from .labels import ManagedLabel
 from .plan import (
     ActionKind,
     ActionResult,
@@ -220,6 +222,27 @@ def execute_skill_plan(
     _apply("update", plan.updates, client.update_skills, report)
     _apply("create", plan.creates, client.create_skills, report)
     return report
+
+
+def label_written_skills(
+    client: VegaClient,
+    skill_ids: list[str],
+    report: SyncReport,
+    label: ManagedLabel,
+) -> None:
+    # Every attach writes an audit row per skill even when the label is
+    # already there, and the public API does not return a skill's labels, so
+    # only the skills this run created or updated are labelled.
+    if not skill_ids:
+        return
+    try:
+        label_id = label.id()
+        for batch in chunks(skill_ids, MODIFY_LABELS_MAX):
+            client.attach_skill_labels(batch, [label_id])
+    except (VegaAPIError, RuntimeError) as e:
+        report.errors.append(
+            f"skills: could not add the '{MANAGED_LABEL}' label: {e}"
+        )
 
 
 def skill_ids_by_external_id(vega_skills: list[dict[str, Any]]) -> dict[str, str]:

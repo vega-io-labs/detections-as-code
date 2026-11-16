@@ -86,7 +86,9 @@ def _call_every_method(client: VegaClient) -> None:
     client.update_memory(memory_update_input(parse_memory(make_memory_yaml(), "m.yaml"), "m1", []))
     client.delete_memory("m1")
     client.list_labels()
-    client.create_label("detections-as-code", "TEAL")
+    client.create_label("Managed by Git", "TEAL")
+    client.attach_skill_labels(["3f2b8c1e-5d4a-4e7b-9a6c-1d2e3f4a5b6c"], ["4a2b8c1e-5d4a-4e7b-9a6c-1d2e3f4a5b6c"])
+    client.attach_detection_labels(["3f2b8c1e-5d4a-4e7b-9a6c-1d2e3f4a5b6c"], ["4a2b8c1e-5d4a-4e7b-9a6c-1d2e3f4a5b6c"])
     client.get_skills()
     client.create_skills([skill_create_input(skill)])
     client.update_skills([skill_update_input(skill, "s1")])
@@ -97,7 +99,7 @@ def test_every_document_and_payload_matches_the_public_schema():
     gql_client = FakeGqlClient(pages={"getDetections": [], "getMemories": [], "getSkills": []})
     _call_every_method(_client(gql_client))
 
-    assert len(gql_client.sent) == 16
+    assert len(gql_client.sent) == 18
     for document, variables in gql_client.sent:
         root = _root_field(document)
         assert validate(SCHEMA, document) == [], root
@@ -162,7 +164,7 @@ def test_a_message_that_mentions_a_code_carries_no_code():
 @pytest.mark.parametrize(
     "call,permission",
     [
-        (lambda c: c.create_label("detections-as-code", "TEAL"), "LabelsWrite"),
+        (lambda c: c.create_label("Managed by Git", "TEAL"), "LabelsWrite"),
         (lambda c: c.create_skills([]), "AgentsWrite"),
         (lambda c: c.get_memories(), "AgentsRead"),
     ],
@@ -172,6 +174,13 @@ def test_access_denied_names_the_permission_the_call_needs(call, permission):
     gql_client = FakeGqlClient(error=TransportQueryError("boom", errors=denied))
     with pytest.raises(VegaAPIError, match=f"needs the {permission} permission"):
         call(_client(gql_client))
+
+
+def test_a_skill_label_denial_names_both_permissions():
+    denied = [{"extensions": {"error_code_name": "ACCESS_DENIED"}}]
+    gql_client = FakeGqlClient(error=TransportQueryError("boom", errors=denied))
+    with pytest.raises(VegaAPIError, match="needs the AgentsWrite and LabelsWrite permissions"):
+        _client(gql_client).attach_skill_labels(["s"], ["l"])
 
 
 def test_known_error_codes_carry_a_hint():

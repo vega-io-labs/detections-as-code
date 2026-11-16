@@ -234,6 +234,7 @@ type DetectionInfo {
   """System-generated unique identifier for the detection."""
   id: ID!
 
+
   """
   Unique identifier for the detection used for programmatic access and detection-as-code workflows. Defaults to the system-generated ID if not provided on creation. Must match ^[a-z0-9][a-z0-9._-]{0,127}$.
   """
@@ -983,6 +984,14 @@ type Mutation {
     input: DeleteDetectionInput!
   ): DeleteDetectionPayload!
 
+  """
+  Attach or remove a set of labels on a set of objects in one call. Every object and label identifier must reference an existing object and label, or the request is rejected and no changes are made.
+  """
+  modifyObjectLabels(
+    """Objects, labels, and the action to apply."""
+    input: ModifyObjectLabelsInput!
+  ): ModifyObjectLabelsPayload!
+
   """Create a new label, optionally inside a category."""
   createLabelPublic(
     """Definition of the label to create."""
@@ -1731,3 +1740,39 @@ input DeleteSkillsInput {
   """
   ids: [ID!]!
 }
+enum LabelObjectType {
+  LIBRARY_DETECTION
+  DETECTION_INSTANCE
+  ALERT
+  INCIDENT
+  BRIEF
+  LOOKUP_TABLE
+  AGENTIC
+  LIBRARY_SKILL
+  ACTION_ITEM
+  MEMORY
+}
+
+"""Action applied by modifyObjectLabels to a set of objects."""
+enum LabelAction {
+  ATTACH
+  REMOVE
+}
+
+"""Input for attaching or removing labels on a set of objects in one call."""
+input ModifyObjectLabelsInput {
+  objectIds: [UUID!]!
+  objectType: LabelObjectType!
+  labelIds: [UUID!]!
+  action: LabelAction!
+}
+
+"""Response returned by modifyObjectLabels."""
+type ModifyObjectLabelsPayload {
+  objectIds: [UUID!]!
+  objectType: LabelObjectType!
+  labelIds: [UUID!]!
+  action: LabelAction!
+  userErrors: [UserError!]!
+}
+

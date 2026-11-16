@@ -64,7 +64,7 @@ def test_each_field_change_is_an_update(overrides):
 def test_label_added_in_the_ui_is_removed_on_next_sync():
     current = make_vega_memory(
         labels=[
-            {"id": MANAGED_LABEL_ID, "name": "detections-as-code"},
+            {"id": MANAGED_LABEL_ID, "name": "Managed by Git"},
             {"id": OTHER_LABEL_ID, "name": "Scanners"},
         ]
     )
@@ -74,7 +74,7 @@ def test_label_added_in_the_ui_is_removed_on_next_sync():
 def test_label_names_match_without_case():
     current = make_vega_memory(
         labels=[
-            {"id": MANAGED_LABEL_ID, "name": "detections-as-code"},
+            {"id": MANAGED_LABEL_ID, "name": "Managed by Git"},
             {"id": OTHER_LABEL_ID, "name": "Scanners"},
         ]
     )
@@ -119,7 +119,7 @@ def test_title_held_by_an_unlabelled_memory_blocks_the_create():
     plan = build_memory_plan([spec()], [released], LABELS)
     assert not plan.creates and not plan.deletes
     assert plan.blocked[0].kind == "create" and plan.blocked[0].external_id == "MEM-OLD1"
-    assert "without the 'detections-as-code' label" in plan.blocked[0].reason
+    assert "without the 'Managed by Git' label" in plan.blocked[0].reason
 
 
 def test_unlabelled_memories_are_never_touched():
@@ -141,7 +141,7 @@ def test_planned_writes_carry_resolved_label_ids():
 def test_title_held_by_a_memory_before_the_label_exists_says_to_create_it():
     ui = make_vega_memory(labels=[])
     plan = build_memory_plan([spec()], [ui], [LABELS[1]])
-    assert "does not exist yet: create 'detections-as-code'" in plan.blocked[0].reason
+    assert "does not exist yet: create 'Managed by Git'" in plan.blocked[0].reason
 
 
 def test_duplicate_titles_in_the_repo_are_rejected(tmp_path):
@@ -224,7 +224,7 @@ def test_first_create_makes_the_managed_label():
     plan = build_memory_plan([spec()], [], [])
     client = FakeClient(labels=[])
     execute_memory_plan(client, plan)
-    assert client.calls[0] == ("create_label", "detections-as-code")
+    assert client.calls[0] == ("create_label", "Managed by Git")
     assert client.calls[1][1]["labelIds"] == ["new-label"]
 
 
@@ -241,7 +241,7 @@ def test_label_creation_error_reaches_every_create():
     denied = [{"extensions": {"error_code_name": "ACCESS_DENIED"}}]
     report = execute_memory_plan(FakeClient(labels=[], fail={"create_label": denied}), plan)
     assert len(report.failed) == 2
-    assert all("could not create the 'detections-as-code' label" in r.error for r in report.failed)
+    assert all("could not create the 'Managed by Git' label" in r.error for r in report.failed)
 
 
 def test_memory_limit_error_explains_the_shared_cap():
@@ -344,3 +344,4 @@ def test_pr_report_merges_checks_for_one_file():
     assert len(report.checks) == 1
     assert not report.all_ok and report.checks[0].warnings == ["renamed"]
     assert report.checks[0].schema_error == "duplicate"
+

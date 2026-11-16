@@ -11,7 +11,8 @@ Detection-as-Code (DaC) moves the authoring surface for tenant-custom detections
 - **Per-detection result reporting.** The reconciler batches API calls in chunks of up to 100 detections and maps each per-detection result back to its YAML, so the run summary names the rule that failed. Each batch is one transaction: an invalid detection rolls back the others in the same chunk, and they are reported as blocked rather than applied. This is what the PR check exists to prevent.
 - **Auditable run summary.** Every sync writes a pass/fail table to the GitHub Actions step summary, with API errors quoted verbatim. Whole-batch failures (API unreachable, tenant outage) are tagged with a `batch API error:` prefix so they read as infrastructure issues rather than detection-level failures.
 - **Skills as code.** Skills under `skills/`, one `SKILL.md` each, go through the same PR check and the same reconciling sync. Detections in the repository can attach them by the `id` in the file. Skills made in the UI and Vega library skills are never touched. See [Skills](#skills).
-- **Memories as code.** Memories under `memories/` go through the same PR check and the same reconciling sync. The sync only manages the memories it created, marked with a `detections-as-code` label, so memories written in the UI or learned by Vega are never touched. See [Memories](#memories).
+- **Memories as code.** Memories under `memories/` go through the same PR check and the same reconciling sync. The sync only manages the memories it created, marked with a `Managed by Git` label, so memories written in the UI or learned by Vega are never touched. See [Memories](#memories).
+- **Everything the repository manages is labelled.** Every detection, skill and memory the sync manages carries the `Managed by Git` label, so anyone in the Vega UI can see that it is kept in step with this repository and that a UI edit to it is overwritten by the next sync unless the change comes back as a pull request. See [The `Managed by Git` label](#the-managed-by-git-label).
 - **Two sync workflows.** An automatic sync runs on push to `main`. A manual `Sync ALL detections, skills and memories` workflow supports bulk deployment for initial onboarding or recovery from drift.
 - **Changes made in Vega flow back as a pull request.** Every 10 minutes (or on demand) a third workflow reads the tenant and compares it with `main`. A detection, skill or memory edited, created or deleted in the Vega UI becomes a file change on one branch, opened as a pull request for review. Merging it makes the repository match the tenant again; running `Sync ALL` restores the repository's version. No AI is involved: the comparison is the same field-by-field diff the sync uses. See [Changes made in Vega](#changes-made-in-vega).
 
@@ -20,7 +21,8 @@ Detection-as-Code (DaC) moves the authoring surface for tenant-custom detections
 Before adopting Detection-as-Code, ensure the following are in place:
 
 - **GitHub Actions.** The validate and sync workflows shipped under `.github/workflows/` run on GitHub Actions. If your organization standardizes on a different CI/CD platform (GitLab CI, CircleCI, Jenkins, Buildkite, Azure Pipelines, etc.), you will need to port the workflow logic to your tool of choice. The Python sync engine in `scripts/` is platform-agnostic and remains usable as-is.
-- **Agent and label permissions on the access key** (only if you sync skills or memories). Skills need `AgentsWrite`. Memories need `AgentsRead` and `AgentsWrite`, plus `LabelsRead` and `LabelsWrite`: the sync reads the tenant's labels to resolve each file's `labels`, and creates the `detections-as-code` label on first use.
+- **Label permissions on the access key.** The sync needs `LabelsRead` and `LabelsWrite`: it adds the `Managed by Git` label to the detections, skills and memories it manages, creates the label on first use, and resolves the `labels` in memory files.
+- **Agent permissions on the access key** (only if you sync skills or memories). Skills need `AgentsWrite`. Memories need `AgentsRead` and `AgentsWrite`.
 - **Memories enabled for your organization** (only if you sync memories). Without them, the sync skips an empty `memories/` folder and reports an error when the folder holds memories.
 - **A Vega access key with Administrator role.** Generate it in the Vega UI under **Settings → Access Keys → Create access key**. Save the value when shown — it is displayed only once. Fine-grained permissions are not yet supported.
 
@@ -38,10 +40,10 @@ Before adopting Detection-as-Code, ensure the following are in place:
    - Require status check: `validate` (the job in the `Validate PR` workflow)
    - Require pull requests before merging
 
-4. (Optional) Let changes made in Vega flow back into the repository:
-   - Add a `VEGA_PULL_TOKEN` repository secret: a fine-grained personal access token or GitHub App token with `contents: write` and `pull-requests: write` on this repository. The `Pull tenant changes into a pull request` workflow opens its pull requests with it, so the `Validate PR` check runs on them. With the workflow's own token instead, no check runs on those pull requests, and a `main` protected as in step 3 can never merge them.
-   - When you create the token, pick your **organization** as the resource owner (not your personal account, and watch for an organization named like the repository). Some organizations require an admin to approve fine-grained tokens before they work. Fine-grained tokens expire; when the workflow reports a 401, create a new one and update the secret.
-   - Alternative, when a check on the pull request is not needed: Settings → Actions → General → Workflow permissions → tick **Allow GitHub Actions to create and approve pull requests**. Many organizations lock this setting, sometimes at the enterprise level; the token works regardless.
+4. (Optional) Let changes made in Vega flow back into the repository. The `Pull tenant changes into a pull request` workflow needs a way to open its pull requests so that the `Validate PR` check runs on them. Pick one:
+   - **A GitHub App (recommended).** Organization Settings → Developer settings → GitHub Apps → New GitHub App. Untick **Webhook: Active**, set **Contents** and **Pull requests** to Read and write, and create it. Generate a private key (a `.pem` file) on its page, then **Install App** on this repository only. In this repository, add a `VEGA_PULL_APP_CLIENT_ID` variable with the App's Client ID and a `VEGA_PULL_APP_PRIVATE_KEY` secret with the contents of the `.pem` file. Each run gets a fresh one-hour token, so nothing expires and nothing is tied to a person.
+   - **A fine-grained personal access token.** Add it as a `VEGA_PULL_TOKEN` secret, with `contents: write` and `pull-requests: write` on this repository. Pick your **organization** as the resource owner (not your personal account, and watch for an organization named like the repository). Some organizations require an admin to approve fine-grained tokens before they work. The token expires; when the workflow reports a 401, create a new one and update the secret.
+   - **The workflow's own token**, when a check on the pull request is not needed: Settings → Actions → General → Workflow permissions → tick **Allow GitHub Actions to create and approve pull requests**. No check runs on those pull requests, so a `main` protected as in step 3 can never merge them, and many organizations lock this setting.
    - GitHub: Actions tab → enable the workflow. Scheduled workflows are off in a fresh fork until you enable them, and GitHub pauses them after 60 days without a commit; a manual run from the Actions tab turns them back on.
 
 The workflows target `https://app.vega.io` and are ready to use once the access key is set. No additional tenant configuration is required.
@@ -321,7 +323,7 @@ labels: []                           # optional: names of labels that exist in y
 
 How the sync treats memories:
 
-- **It only manages its own memories.** Every memory the sync creates carries the `detections-as-code` label, created on first use. Only labelled memories are updated and deleted, so memories written in the Vega UI and memories Vega learns from analyst verdicts are left alone. A file whose title matches one of those is blocked rather than created a second time.
+- **It only manages its own memories.** Every memory the sync creates carries the `Managed by Git` label, created on first use. Only labelled memories are updated and deleted, so memories written in the Vega UI and memories Vega learns from analyst verdicts are left alone. A file whose title matches one of those is blocked rather than created a second time.
 - **The title is the identity.** There is no `id` field: a file is matched to the labelled memory with the same title. Changing a title therefore deletes the old memory and creates a new one, with a new `MEM-` id and an empty usage history.
 - **The file is the source of truth.** Every changed field is written, and `entities` and `labels` replace what is attached in the UI. Removing `expiresAt` removes the expiration.
 - **Deleting the file deletes the memory** on the next sync (unless `--no-deletes`). Set `status: "disabled"` to keep it but stop agents from using it.
@@ -339,6 +341,19 @@ Four GitHub Actions workflows ship with this template:
 | **Sync ALL detections, skills and memories (manual)** | `.github/workflows/sync-all.yml` | Manual (`workflow_dispatch`) only | Same reconcile, but defaults to `dry_run=true` and `no_deletes=true`. Use for first-run bulk deploy or recovery after a partial sync. |
 | **Pull tenant changes into a pull request** | `.github/workflows/pull.yml` | Every 10 minutes (`schedule`). Also `workflow_dispatch`. | Reads the tenant, rewrites the files under `detections/`, `skills/` and `memories/` to match it, and opens or updates one pull request from the `vega/tenant-changes` branch with the difference. Nothing is written to the tenant. See [Changes made in Vega](#changes-made-in-vega). |
 
+### The `Managed by Git` label
+
+The sync puts the `Managed by Git` label on every detection, skill and memory it manages, and creates the label on first use.
+
+- **Detections.** After each sync, every detection that has a file in this repository and does not carry the label gets it, in batches of 100. On the first sync after you add this template version, that is every detection the repository manages; after that only new detections, and detections whose label was removed in the UI. The run summary lists each one as a `label` row.
+- **Skills.** A skill gets the label when the sync creates or updates it. Vega's API does not report a skill's labels, so the sync cannot see which skills lack it: a skill that has not changed since you added this template version, or whose label was removed in the UI, gets it the next time its `SKILL.md` changes. Labels you add to a skill in the UI stay.
+- **Memories.** The label is how the sync knows which memories it manages. See [Memories](#memories).
+
+- Filter the Vega UI by the label to see what the repository owns. Detections and skills made in the UI, memories written in the UI or learned by Vega, and Vega library content are never labelled.
+- The label is a marker, not a lock. A teammate can still edit a labelled detection or skill in the UI. The next sync overwrites that edit, unless the [pull workflow](#changes-made-in-vega) brings it back as a pull request first and it is merged.
+- The sync only adds this one label. Other labels set in the UI stay. The pull workflow never writes labels to detection files, so the label never shows up in a pull request.
+- A dry run says what would get the label, and writes nothing.
+
 The sync and pull workflows read `VEGA_ACCESS_KEY` and `VEGA_ACCESS_KEY_ID` from the repository secrets. On scope-enabled (ABAC) tenants where the key is bound to multiple scopes, set the `VEGA_SCOPE_ID` repository variable. The tenant URL is `https://app.vega.io`.
 
 ## Changes made in Vega
@@ -352,7 +367,7 @@ Every 10 minutes, or when you run it from the Actions tab, the workflow logs in 
 | In Vega | In the repository |
 |---|---|
 | A detection, skill or labelled memory was edited | Its file is updated. Only the keys whose values moved are touched; comments, key order and quoting in the rest of the file are kept, list items that stay keep their place and their comments, and a value the tenant cleared back to its default takes its key with it (a default the file spells out, like `references: []`, stays). |
-| A detection was created in the UI or through the API | A new file `detections/<name>.yaml` is added, with the detection's own id. Vega library detections are not pulled; a skill made in the UI (no `id`) and a memory without the `detections-as-code` label are not pulled either, exactly as the sync does not touch them. |
+| A detection was created in the UI or through the API | A new file `detections/<name>.yaml` is added, with the detection's own id. Vega library detections are not pulled; a skill made in the UI (no `id`) and a memory without the `Managed by Git` label are not pulled either, exactly as the sync does not touch them. |
 | A skill or memory the repository manages was created through the API | A new `skills/<name>/SKILL.md` or `memories/<title>.yaml` is added. |
 | A detection, skill or memory was deleted | Its file is removed; for a skill, the whole folder of its `SKILL.md`. A file whose title matches a memory that lost its label is left in place and noted, because the sync blocks on it rather than creating a duplicate. |
 | A memory was retitled | Memory files carry no id, so a retitle would read as a deletion plus a creation. When exactly one file and one memory are left unmatched with the same content, the file is edited in place instead (comments kept) and shown as a rename; a file named after its old title is renamed after the new one. |
@@ -374,7 +389,7 @@ Who made the change is not in the pull request. The sync and pull use one access
 If the tenant already holds custom detections when you adopt this repository, the pull is the way to bring them in; `Sync ALL` goes the other way and would delete them.
 
 1. Run **Pull tenant changes into a pull request** by hand (Actions → the workflow → Run workflow). It opens one pull request that adds a file for every custom detection in the tenant, including the ones made in the Vega UI (Vega gives those an `externalId` equal to their id, so the sync manages them from then on).
-2. Vega library detections are not included. Skills are pulled only if a `skills/` folder exists in the repository, memories only if they carry the `detections-as-code` label.
+2. Vega library detections are not included. Skills are pulled only if a `skills/` folder exists in the repository, memories only if they carry the `Managed by Git` label.
 3. The template's example detection, `detections/mimikatz-credential-theft-crowdstrike.yaml`, shows up as a removal when the tenant does not have it. Delete the file before the first pull, or keep it by restoring the file in the pull request.
 4. On a large tenant the pull request is large, and every check that runs on pull requests runs on all of it, so expect it to take a while.
 5. After merging, the sync that follows should plan nothing. A `Sync ALL` dry run confirms it.
@@ -531,7 +546,8 @@ Inside Vega, each merged change appears as a row in the detection's version-hist
 | Sync fails with `memories are not available to this access key` | Memories are not enabled for your organization, or the key lacks `AgentsRead` or `LabelsRead`. | Ask Vega to enable memories, or remove the `memories/` folder to stop syncing them. |
 | A memory fails with `label(s) not found in the tenant` | A name under `labels` does not exist yet. | Create the label in the Vega UI, or remove it from the file. |
 | A memory fails with `MEMORY_LIMIT_REACHED` | The tenant would pass 250 active memories. The count includes memories written in the UI and learned by Vega. | Disable or delete memories you no longer need, in the repository or the UI, then re-run. |
-| A memory fails with `a memory with this title already exists without the 'detections-as-code' label` | Someone removed the label in the UI, or wrote a memory with the same title there. The sync no longer manages it and will not create a duplicate. | Add the `detections-as-code` label back to that memory in the UI to hand it to the sync, or delete it. |
+| A memory fails with `a memory with this title already exists without the 'Managed by Git' label` | Someone removed the label in the UI, or wrote a memory with the same title there. The sync no longer manages it and will not create a duplicate. | Add the `Managed by Git` label back to that memory in the UI to hand it to the sync, or delete it. |
+| A sync fails with `could not add the 'Managed by Git' label` | The access key lacks `LabelsRead` or `LabelsWrite`. The detections themselves were written. | Use an access key with the Administrator role; the next run adds the label. |
 | A chunk of detections all fail with the same `batch API error: ...` line | The API was unreachable or returned a transport error for that batch. | Re-run the workflow. Transient transport errors clear on retry; the next run is idempotent (no-op updates are skipped). |
 | Sync reports failures stating the detection already exists, yet the rule is visible in the UI | The first attempt landed on Vega but the response was lost in transit; the retry encountered a duplicate. | The detection is healthy. Re-run the workflow; the next pass records it as a no-op. |
 
@@ -541,6 +557,14 @@ Inside Vega, each merged change appears as a row in the detection's version-hist
 |---|---|---|
 | Detection is `HEALTHY` in the UI but never fires | KQL parses and runs but does not match any events. | Iterate on the query against the same data source. |
 | Detection fires too often or produces noise | Tuning gap. | Add exclusion `where ... != ...` clauses, or set `state: "test_mode"` so the rule continues to run against production data without firing incidents while you tune. |
+
+### Pull workflow
+
+| Symptom | Likely cause | Fix |
+|---|---|---|
+| `Get a GitHub App token` fails with `Integration not found` | `VEGA_PULL_APP_CLIENT_ID` is not the App's Client ID, or the App was deleted. | Copy the Client ID from the App's settings page into the variable. |
+| `Get a GitHub App token` fails on the private key | `VEGA_PULL_APP_PRIVATE_KEY` is not the App's current key, or was pasted without its `BEGIN` / `END` lines. | Generate a new private key on the App's page and paste the whole `.pem` file into the secret. |
+| The pull reports a 401 or 403 from GitHub | With `VEGA_PULL_TOKEN`: the token expired or lacks `contents` / `pull-requests` write. With an App: the App is not installed on this repository or lacks those permissions. | Renew the token, or install the App on this repository with Contents and Pull requests set to Read and write. |
 
 ## Further reading
 
@@ -558,5 +582,5 @@ Canonical Vega platform documentation:
 - A merge that fails partway through leaves the tenant in a partially-applied state. Re-running the workflow after fixing the offending YAML converges (idempotent).
 - The Access Key currently requires **Administrator** role; fine-grained scoping is not yet supported.
 - `deleteDetection` is a single-detection API; deletes run one rule at a time. Creates and updates batch in chunks of 100.
-- Skills sync the `SKILL.md` body only; other files in a skill's folder are not uploaded. Skill labels are managed in the Vega UI. Vega library skills are read-only: clone one in the UI to change it.
+- Skills sync the `SKILL.md` body only; other files in a skill's folder are not uploaded. Skill labels are managed in the Vega UI, apart from the `Managed by Git` label the sync adds. Vega library skills are read-only: clone one in the UI to change it.
 - Memories are matched by title, so renaming one replaces it and resets its usage history. Memories Vega proposes for review (pending review) are not managed here; approve or ignore them in the UI.

@@ -4,7 +4,7 @@ name: Sync Detections, Skills and Memories to Vega
 # against the tenant. Skills sync first so detections can name them, and only
 # skills with an `id` from this repo are touched. Memories are synced one
 # request each (the API has no batch call), and only the memories carrying the
-# 'detections-as-code' label are touched.
+# 'Managed by Git' label are touched.
 # The reconciler skips no-op updates (it diffs the YAML against the current
 # Vega state and only sends changes) and batches createDetections /
 # updateDetections in chunks of 100. The API returns a per-detection result

@@ -10,7 +10,7 @@ name: Sync ALL detections, skills and memories (manual)
 # Same workflow as sync.yml, but never tied to a push event. Defaults to
 # --no-deletes to make first-run safer (a tenant with existing detections
 # will not get them wiped). Skills made in the UI and memories without the
-# 'detections-as-code' label are never deleted, with or without the flag.
+# 'Managed by Git' label are never deleted, with or without the flag.
 
 on:
   workflow_dispatch:

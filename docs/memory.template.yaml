@@ -33,6 +33,6 @@ entities: []
 #    value: "192.0.2.10"
 
 # Names of labels that already exist in your tenant. The sync adds the
-# 'detections-as-code' label by itself; do not list it here. This list
+# 'Managed by Git' label by itself; do not list it here. This list
 # replaces whatever labels are attached in the UI.
 labels: []
