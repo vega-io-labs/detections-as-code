@@ -6,7 +6,7 @@ Guidance for AI coding assistants (Claude Code, Cursor, Copilot, etc.) operating
 
 Detection-as-Code template for Vega customers. YAML detections under `detections/`, `SKILL.md` skills under `skills/` and YAML memories under `memories/` are synchronised to the customer's Vega tenant on every merge to `main`. The sync engine resides in `scripts/`; the GitHub Actions workflows reside in `.github/workflows/`.
 
-The repository is also kept in step the other way: `scripts/pull.py` reads the tenant and rewrites the files so the sync finds nothing to do, and `.github/workflows/pull.yml` runs it every 10 hours and opens one pull request with the difference. `scripts/export.py` is the reverse of `translator.py`: it turns an API object into the file whose forward payload is a no-op against it, editing an existing file in place with ruamel.yaml so comments and key order survive.
+The repository is also kept in step the other way: `scripts/pull.py` reads the tenant and rewrites the files so the sync finds nothing to do, and `.github/workflows/pull.yml` runs it every 10 minutes and opens one pull request with the difference. `scripts/export.py` is the reverse of `translator.py`: it turns an API object into the file whose forward payload is a no-op against it, editing an existing file in place with ruamel.yaml so comments and key order survive.
 
 ## Authoring a new detection
 
