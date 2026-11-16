@@ -8,6 +8,8 @@ Mapping:
   severity -> DetectionSeverity enum value (accepts int 1-4 or LOW|MEDIUM|HIGH|CRITICAL)
   mode   -> DetectionMode enum value (alert|evidence|monitor, defaults to alert)
   skillIds -> skillIds, the triage/investigation skills attached to the detection
+  isAlwaysEscalatedToIncident, webhookIds -> same name, sent only when the
+    YAML sets them (absent = managed in the Vega UI)
 
 Omitted fields:
   mitreTactics    : derived server-side from mitreTechniques.
@@ -39,6 +41,7 @@ from .consts import (
     REMOVED_FIELDS,
     SEVERITY_MAP,
     SKILL_IDS_MAX,
+    WEBHOOK_IDS_MAX,
     UNCLEARABLE_TEXT_FIELDS,
     VALID_STATES,
     VALID_MODES,
@@ -56,6 +59,9 @@ _EXTERNAL_ID_RE = re.compile(r"^[a-z0-9][a-z0-9._-]{0,127}$")
 # tenant, and blocking would make those detections unmanageable here.
 _CELL_NAME_RE = re.compile(r"^[A-Za-z0-9 _-]+$")
 _MITRE_TECHNIQUE_RE = re.compile(r"^T\d{4}(\.\d{3})?$")
+_UUID_RE = re.compile(
+    r"^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$"
+)
 # Fixed-interval shorthand accepted by the scheduler: hours and/or minutes,
 # hours first ("5m", "1h", "1h30m"). Seconds and days are NOT units here -
 # "30s" and "2d" are rejected as cron expressions further down.
@@ -243,6 +249,59 @@ def _validate_skill_ids(detection: dict[str, Any], ext_id: str) -> None:
         seen.add(value)
 
 
+def _validate_escalation(
+    detection: dict[str, Any], mode: DetectionMode, ext_id: str
+) -> None:
+    value = detection.get("isAlwaysEscalatedToIncident")
+    if value is None:
+        return
+    if not isinstance(value, bool):
+        raise ValueError(
+            f"{ext_id}: 'isAlwaysEscalatedToIncident' must be true or false "
+            f"(got {value!r})"
+        )
+    if value and mode != DetectionMode.ALERT:
+        raise ValueError(
+            f"{ext_id}: 'isAlwaysEscalatedToIncident: true' is only allowed "
+            f"in alert mode (mode is {mode.value.lower()})"
+        )
+
+
+def _validate_skills_mode(
+    detection: dict[str, Any], mode: DetectionMode, ext_id: str
+) -> None:
+    if mode != DetectionMode.ALERT and _ensure_list(detection.get("skillIds")):
+        raise ValueError(
+            f"{ext_id}: 'skillIds' must be empty in {mode.value.lower()} mode; "
+            f"Vega attaches skills only to alert detections"
+        )
+
+
+def _webhook_ids(detection: dict[str, Any], ext_id: str) -> list[str] | None:
+    if detection.get("webhookIds") is None:
+        return None
+    values = _ensure_list(detection.get("webhookIds"))
+    if len(values) > WEBHOOK_IDS_MAX:
+        raise ValueError(
+            f"{ext_id}: 'webhookIds' accepts at most {WEBHOOK_IDS_MAX} "
+            f"entries (got {len(values)})"
+        )
+    ids: list[str] = []
+    for i, value in enumerate(values):
+        if not isinstance(value, str) or not _UUID_RE.match(value.strip()):
+            raise ValueError(
+                f"{ext_id}: 'webhookIds[{i}]' must be the UUID of a Webhook "
+                f"connector (got {value!r})"
+            )
+        webhook_id = value.strip().lower()
+        if webhook_id in ids:
+            raise ValueError(
+                f"{ext_id}: 'webhookIds[{i}]' {value!r} is duplicated"
+            )
+        ids.append(webhook_id)
+    return ids
+
+
 def _validate_mitre_techniques(detection: dict[str, Any], ext_id: str) -> None:
     for i, value in enumerate(_ensure_list(detection.get("mitreTechniques"))):
         if not isinstance(value, str) or not _MITRE_TECHNIQUE_RE.match(value):
@@ -404,6 +463,10 @@ def yaml_to_create_input(detection: dict[str, Any]) -> dict[str, Any]:
     _validate_entity_fields(detection, ext_id)
     _validate_skill_ids(detection, ext_id)
     _validate_grouping(detection, ext_id)
+    mode = _mode_to_enum(detection.get("mode"))
+    _validate_escalation(detection, mode, ext_id)
+    _validate_skills_mode(detection, mode, ext_id)
+    webhook_ids = _webhook_ids(detection, ext_id)
 
     payload = {
         "externalId": ext_id,
@@ -411,7 +474,7 @@ def yaml_to_create_input(detection: dict[str, Any]) -> dict[str, Any]:
         "severity": _severity_to_enum(detection["severity"]),
         "frequencyCron": frequency,
         "lookBackSeconds": lookback_raw,
-        "mode": _mode_to_enum(detection.get("mode")).value,
+        "mode": mode.value,
         "mitreTechniques": _ensure_list(detection.get("mitreTechniques")),
         "logicDescription": detection.get("logicDescription") or "",
         "attackScenario": detection.get("attackScenario") or "",
@@ -435,6 +498,16 @@ def yaml_to_create_input(detection: dict[str, Any]) -> dict[str, Any]:
         payload["groupingField"] = detection["groupingField"].strip()
     if detection.get("groupingThreshold") is not None:
         payload["groupingThreshold"] = detection["groupingThreshold"]
+    # Absent means the Vega UI owns the setting, so nothing is sent and the
+    # tenant value stays. Outside alert mode Vega allows only false and rejects
+    # a mode switch while the switch is still on, so false is sent there.
+    escalate = detection.get("isAlwaysEscalatedToIncident")
+    if escalate is not None:
+        payload["isAlwaysEscalatedToIncident"] = escalate
+    elif mode != DetectionMode.ALERT:
+        payload["isAlwaysEscalatedToIncident"] = False
+    if webhook_ids is not None:
+        payload["webhookIds"] = webhook_ids
     return payload
 
 

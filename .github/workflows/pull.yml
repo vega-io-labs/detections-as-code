@@ -1,6 +1,6 @@
 name: Pull tenant changes into a pull request
 
-# The reverse of sync.yml. Every 10 hours (and on demand) it reads the tenant
+# The reverse of sync.yml. Every 10 minutes (and on demand) it reads the tenant
 # and compares it with the files on the default branch. When a detection,
 # skill or memory was changed, created or deleted in the Vega UI (or through
 # the API), the matching file changes are committed to one branch and opened
@@ -19,7 +19,9 @@ name: Pull tenant changes into a pull request
 
 on:
   schedule:
-    - cron: '0 */10 * * *'
+    # Off the round minutes: GitHub delays and sometimes drops scheduled runs
+    # that start at :00, when most schedules fire.
+    - cron: '3-59/10 * * * *'
   workflow_dispatch:
 
 permissions:

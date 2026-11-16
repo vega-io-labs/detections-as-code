@@ -168,6 +168,15 @@ def is_no_op_update(
         vega_state.get("deduplicationWindowSeconds") or 0
     ):
         return False
+    # Only compared when the payload carries them: absent means the UI owns it.
+    if "isAlwaysEscalatedToIncident" in payload and payload[
+        "isAlwaysEscalatedToIncident"
+    ] != bool(vega_state.get("isAlwaysEscalatedToIncident")):
+        return False
+    if "webhookIds" in payload and set(payload["webhookIds"]) != {
+        str(w).lower() for w in vega_state.get("webhookIds") or []
+    }:
+        return False
     for f in _UPDATE_DIFF_UNCLEARABLE_FIELDS:
         if f in payload and payload[f] != vega_state.get(f):
             return False

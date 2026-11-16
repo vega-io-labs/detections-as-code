@@ -42,6 +42,8 @@ def make_vega(**overrides: Any) -> dict[str, Any]:
         "actorFields": [],
         "targetFields": [],
         "skills": [],
+        "isAlwaysEscalatedToIncident": False,
+        "webhookIds": [],
         "createdBy": {"principalType": "user"},
         "cells": [
             {

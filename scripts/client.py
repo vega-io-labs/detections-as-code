@@ -283,6 +283,8 @@ class VegaClient:
               actorFields
               targetFields
               skills { id }
+              isAlwaysEscalatedToIncident
+              webhookIds
               createdBy { principalType }
               cells { name query trigger }
             }

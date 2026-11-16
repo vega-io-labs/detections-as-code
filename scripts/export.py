@@ -62,6 +62,8 @@ DETECTION_KEY_ORDER: tuple[str, ...] = (
     "actorFields",
     "targetFields",
     "skillIds",
+    "isAlwaysEscalatedToIncident",
+    "webhookIds",
     "query",
     "cells",
     "detectionCells",
@@ -192,6 +194,23 @@ def _grouping(
         )
 
 
+def _ui_owned_unless_set(
+    doc: dict[str, Any], vega: dict[str, Any], existing: dict[str, Any]
+) -> None:
+    """A key the file has stays and follows the tenant. A key it lacks stays
+    out, because adding it would move the setting from the UI to the file and
+    the next sync would undo a later UI change. Only a new file takes the
+    tenant's non-default values, so a first import keeps them."""
+    is_new_file = not existing
+    escalate = bool(vega.get("isAlwaysEscalatedToIncident"))
+    if "isAlwaysEscalatedToIncident" in existing or (is_new_file and escalate):
+        doc["isAlwaysEscalatedToIncident"] = escalate
+    webhooks = [str(w).lower() for w in vega.get("webhookIds") or []]
+    if "webhookIds" in existing or (is_new_file and webhooks):
+        previous = [str(w).lower() for w in existing.get("webhookIds") or []]
+        doc["webhookIds"] = _keep_order(sorted(webhooks), previous)
+
+
 def _cell_text(vega_query: str | None, previous: Any) -> str:
     if isinstance(previous, str) and normalise_cell_query(
         previous
@@ -290,6 +309,7 @@ def detection_file(
         {skill_external_ids.get(s["id"], s["id"]) for s in vega.get("skills") or []}
     )
     _set_list(doc, "skillIds", _keep_order(skill_ids, existing.get("skillIds")), existing)
+    _ui_owned_unless_set(doc, vega, existing)
     _cells(doc, list(vega.get("cells") or []), existing)
     return doc
 
