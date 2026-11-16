@@ -66,7 +66,12 @@ def _client(gql_client: FakeGqlClient) -> VegaClient:
 
 
 def _call_every_method(client: VegaClient) -> None:
-    detection = make_yaml(skillIds=["s1"], mode="evidence")
+    detection = make_yaml(
+        skillIds=["s1"],
+        mode="alert",
+        isAlwaysEscalatedToIncident=True,
+        webhookIds=["3f2b8c1e-5d4a-4e7b-9a6c-1d2e3f4a5b6c"],
+    )
     memory = parse_memory(make_memory_yaml(expiresAt="2030-01-01", labels=["Scanners"]), "m.yaml")
     skill = parse_skill(make_skill_md(), "skills/a/SKILL.md")
 

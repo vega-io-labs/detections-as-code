@@ -373,3 +373,41 @@ def test_slug():
     assert slug("Root Account Console Login!") == "root-account-console-login"
     assert slug("***") == ""
     assert len(slug("x" * 200)) == 80
+
+
+WEBHOOK = "3f2b8c1e-5d4a-4e7b-9a6c-1d2e3f4a5b6c"
+
+
+def test_escalation_and_webhooks_appear_only_when_the_tenant_sets_them():
+    doc = yaml.safe_load(exported(make_vega()))
+    assert "isAlwaysEscalatedToIncident" not in doc and "webhookIds" not in doc
+    doc = yaml.safe_load(
+        exported(make_vega(isAlwaysEscalatedToIncident=True, webhookIds=[WEBHOOK]))
+    )
+    assert doc["isAlwaysEscalatedToIncident"] is True
+    assert doc["webhookIds"] == [WEBHOOK]
+
+
+def test_escalation_and_webhooks_the_file_owns_stay_when_cleared_in_the_tenant():
+    existing = yaml.safe_dump(
+        make_yaml(isAlwaysEscalatedToIncident=True, webhookIds=[WEBHOOK])
+    )
+    doc = yaml.safe_load(exported(make_vega(), existing))
+    assert doc["isAlwaysEscalatedToIncident"] is False
+    assert doc["webhookIds"] == []
+
+
+def test_evidence_detection_exports_without_escalation():
+    doc = yaml.safe_load(exported(make_vega(mode="EVIDENCE")))
+    assert doc["mode"] == "evidence"
+    assert "isAlwaysEscalatedToIncident" not in doc
+
+
+def test_an_existing_file_without_the_keys_never_gains_them():
+    existing = yaml.safe_dump(make_yaml())
+    tenant = make_vega(
+        severity="HIGH", isAlwaysEscalatedToIncident=True, webhookIds=[WEBHOOK]
+    )
+    doc = yaml.safe_load(exported(tenant, existing))
+    assert doc["severity"] != make_yaml()["severity"]
+    assert "isAlwaysEscalatedToIncident" not in doc and "webhookIds" not in doc

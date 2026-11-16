@@ -358,6 +358,10 @@ type DetectionInfo {
   Relative path to open the detection in the Vega UI; resolve against your Vega app host.
   """
   href: String!
+  """True when every alert this detection produces is added to an incident: an existing matching incident when there is one, otherwise a new incident."""
+  isAlwaysEscalatedToIncident: Boolean!
+  """IDs of the Webhook connectors Vega notifies when this detection produces an alert. Empty when no webhook is attached."""
+  webhookIds: [ID!]!
 }
 
 """Severity level of a detection."""
@@ -1245,6 +1249,10 @@ input CreateDetectionInput {
   Skill IDs to attach to the detection, used when Vega triages the alerts it produces. Each ID must reference a skill that exists and is accessible to your organization, and whose category is `TRIAGE` or `INVESTIGATION`. Omit or pass an empty list to create the detection with no skills. If any ID is invalid, does not exist, or has an unsupported category, the whole request fails and no detections are created. Maximum 20 IDs.
   """
   skillIds: [ID!] = []
+  """Add every alert the detection produces to an incident: an existing matching incident when there is one, otherwise a new incident. Allowed only when `mode` is `ALERT`. Defaults to false."""
+  isAlwaysEscalatedToIncident: Boolean = false
+  """IDs of the Webhook connectors to notify when the detection produces an alert. Each ID must be a Webhook connector configured in your organization. If any ID is malformed, does not exist or is not a Webhook connector, the whole request fails and no detections are created. Defaults to no webhooks. Maximum 20 IDs."""
+  webhookIds: [ID!] = []
 }
 
 """Input for a query cell that is part of a detection."""
@@ -1390,6 +1398,10 @@ input UpdateDetectionInput {
   Full replacement list of skill IDs attached to the detection, used when Vega triages the alerts it produces. When provided, it replaces the detection's current skills; pass an empty list to remove all of them. Omit the field to leave the current skills unchanged. Each ID must reference a skill that exists and is accessible to your organization, and whose category is `TRIAGE` or `INVESTIGATION`. If any ID is invalid, does not exist, or has an unsupported category, the whole request fails and no detections are updated. Maximum 20 IDs.
   """
   skillIds: [ID!]
+  """Add every alert the detection produces to an incident: an existing matching incident when there is one, otherwise a new incident. Allowed only when the detection's mode, after this update, is `ALERT`. Omit the field to leave the setting unchanged."""
+  isAlwaysEscalatedToIncident: Boolean
+  """Full replacement list of IDs of the Webhook connectors to notify when the detection produces an alert. When provided, it replaces the detection's current webhooks; pass an empty list to remove all of them. Omit the field to leave the current webhooks unchanged. Each ID must be a Webhook connector configured in your organization. If any ID is malformed, does not exist or is not a Webhook connector, the whole request fails and no detections are updated. Maximum 20 IDs."""
+  webhookIds: [ID!]
 }
 
 """Response payload returned by the setDetectionsState mutation."""

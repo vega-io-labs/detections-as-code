@@ -62,3 +62,8 @@ targetFields: []                                 # normalized field names, at mo
 # the Vega ID of any other skill. Keep empty for evidence and monitor
 # detections. This list replaces whatever is attached in the UI.
 skillIds: []
+
+# Leave these two out to manage them in the Vega UI. Once a key is here, the
+# file owns it on every sync: false / [] turn it off, even if set in the UI.
+# isAlwaysEscalatedToIncident: false            # "Always escalate to incident", alert mode only
+# webhookIds: []                                 # Webhook connector UUIDs, at most 20

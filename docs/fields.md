@@ -126,10 +126,11 @@ escalation.
   - `evidence` - alerts skip AI triage; they are escalated only when correlation places them in an incident
   - `monitor` - alerts are recorded only; they skip triage and correlation and never create or join an incident
 - **Note:** `evidence` and `monitor` detections cannot carry triage skills or
-  "Always escalate to incident". Leave `skillIds` empty for them, and clear
-  "Always escalate to incident" in the Vega UI (it is UI-managed) before
-  switching a detection away from `alert`, or the update is rejected and
-  rolls back its batch.
+  "Always escalate to incident". Leave `skillIds` empty for them. The sync
+  turns "Always escalate to incident" off when the YAML sets one of these
+  modes, so switching away from `alert` works even if someone turned it on
+  in the UI. Setting `isAlwaysEscalatedToIncident: true` with them fails
+  the PR check.
 - **Note:** the key was briefly called `type` with a `signal` value in the API. The
   sync rejects `type` so a stale YAML does not silently stay on alert.
 - **Note:** a change of mode on an existing detection is pushed on the next
@@ -260,11 +261,51 @@ alerts this detection produces.
 - **Note:** the YAML is the full list. Omitting the key or passing `[]`
   detaches every skill, including skills attached in the Vega UI.
 - **Note:** `evidence` and `monitor` detections cannot carry skills; keep
-  the list empty for them.
+  the list empty for them. The PR check fails otherwise.
 
 ```yaml
 skillIds:
   - "019e4c2b-7a10-7d3e-9c1f-2b6a8e0f4d11"
+```
+
+### `isAlwaysEscalatedToIncident` - optional, boolean, default: managed in the UI
+
+Add every alert the detection produces to an incident: an existing matching
+incident when there is one, otherwise a new incident. The Vega UI calls it
+"Always escalate to incident".
+
+- **Type:** boolean
+- **Required:** no
+- **Default:** key absent, the setting stays as it is in the Vega UI
+- **Constraints:** `true` only when `mode` is `alert`; the PR check fails
+  otherwise.
+- **Note:** once the key is in the file, the file owns it: `false` turns it
+  off, including when someone turned it on in the UI. Removing the key hands
+  the setting back to the UI and leaves its current value.
+- **Note:** for `evidence` and `monitor` detections the sync always sends
+  `false`, the only value Vega allows for them.
+
+```yaml
+isAlwaysEscalatedToIncident: true
+```
+
+### `webhookIds` - optional, list of strings, default: managed in the UI
+
+Webhook connectors Vega notifies when the detection produces an alert.
+
+- **Type:** list of strings
+- **Required:** no
+- **Default:** key absent, the webhooks stay as they are in the Vega UI
+- **Constraints:** at most 20 IDs, no duplicates, each a UUID. Each must be
+  a Webhook connector configured in your tenant, or the sync batch is
+  rejected. Copy the ID from the connector's page in the Vega UI.
+- **Note:** once the key is in the file, it is the full list: `[]` detaches
+  every webhook, including webhooks attached in the UI. Removing the key
+  hands the webhooks back to the UI and leaves the current ones attached.
+
+```yaml
+webhookIds:
+  - "3f2b8c1e-5d4a-4e7b-9a6c-1d2e3f4a5b6c"
 ```
 
 ### `references` - optional, list of strings, default `[]`
@@ -504,6 +545,9 @@ the check runs without tenant access and cannot tell which a YAML will become.
 | `deduplicationWindowSeconds` within 0-86400 | translator | PR red |
 | `groupingThreshold` within 2-100 | translator | PR red |
 | `actorFields` / `targetFields` at most 5 non-empty entries each | translator | PR red |
+| `isAlwaysEscalatedToIncident` is a boolean, and `true` only in `alert` mode | translator | PR red |
+| `skillIds` is empty unless `mode` is `alert` | translator | PR red |
+| `webhookIds` at most 20 UUIDs, no duplicates | translator | PR red |
 | `mitreTechniques` entries look like `T1078` / `T1078.004` | translator | PR red |
 | Removed fields (`groupingFields`, `groupingDurationSeconds`) are not used | translator | PR red, replacement named |
 | Exactly one of `query` / `cells` is present (not both, not neither) | translator | PR red |

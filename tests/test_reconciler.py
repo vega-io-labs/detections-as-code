@@ -49,3 +49,33 @@ def test_missing_description_in_yaml_never_diffs():
 def test_duplicate_skill_ids_from_the_api_do_not_diff():
     current = make_vega(skills=[{"id": "s1"}, {"id": "s1"}, {"id": "s2"}])
     assert build_plan([make_yaml(skillIds=["s1", "s2"])], [current]).no_op_updates == 1
+
+
+WEBHOOK = "3f2b8c1e-5d4a-4e7b-9a6c-1d2e3f4a5b6c"
+
+
+def test_ui_owned_escalation_and_webhooks_never_diff():
+    current = make_vega(isAlwaysEscalatedToIncident=True, webhookIds=[WEBHOOK])
+    assert build_plan([make_yaml()], [current]).no_op_updates == 1
+
+
+def test_escalation_and_webhooks_set_in_the_file_are_enforced():
+    current = make_vega(isAlwaysEscalatedToIncident=True, webhookIds=[WEBHOOK])
+    plan = build_plan(
+        [make_yaml(isAlwaysEscalatedToIncident=False, webhookIds=[])], [current]
+    )
+    assert plan.updates[0].payload["isAlwaysEscalatedToIncident"] is False
+    assert plan.updates[0].payload["webhookIds"] == []
+    same = build_plan(
+        [make_yaml(isAlwaysEscalatedToIncident=True, webhookIds=[WEBHOOK.upper()])],
+        [current],
+    )
+    assert same.no_op_updates == 1
+
+
+def test_switch_to_evidence_turns_ui_escalation_off():
+    current = make_vega(isAlwaysEscalatedToIncident=True)
+    plan = build_plan([make_yaml(mode="evidence")], [current])
+    assert plan.updates[0].payload["isAlwaysEscalatedToIncident"] is False
+    settled = make_vega(mode="EVIDENCE")
+    assert build_plan([make_yaml(mode="evidence")], [settled]).no_op_updates == 1

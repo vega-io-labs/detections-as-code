@@ -6,7 +6,7 @@ Guidance for AI coding assistants (Claude Code, Cursor, Copilot, etc.) operating
 
 Detection-as-Code template for Vega customers. YAML detections under `detections/`, `SKILL.md` skills under `skills/` and YAML memories under `memories/` are synchronised to the customer's Vega tenant on every merge to `main`. The sync engine resides in `scripts/`; the GitHub Actions workflows reside in `.github/workflows/`.
 
-The repository is also kept in step the other way: `scripts/pull.py` reads the tenant and rewrites the files so the sync finds nothing to do, and `.github/workflows/pull.yml` runs it every 10 hours and opens one pull request with the difference. `scripts/export.py` is the reverse of `translator.py`: it turns an API object into the file whose forward payload is a no-op against it, editing an existing file in place with ruamel.yaml so comments and key order survive.
+The repository is also kept in step the other way: `scripts/pull.py` reads the tenant and rewrites the files so the sync finds nothing to do, and `.github/workflows/pull.yml` runs it every 10 minutes and opens one pull request with the difference. `scripts/export.py` is the reverse of `translator.py`: it turns an API object into the file whose forward payload is a no-op against it, editing an existing file in place with ruamel.yaml so comments and key order survive.
 
 ## Authoring a new detection
 
@@ -82,6 +82,7 @@ requests opened from forks validate under the same rules.
 - `attackScenario`: 2-4 sentences written from the adversary's perspective. State the attacker's objective and explain how the matched events advance it. Restrict the content to threat-model reasoning.
 - The two fields are intentionally distinct: `logicDescription` answers "what does the rule match?", `attackScenario` answers "why does the match indicate malicious activity?". Conflating the two weakens both.
 - `skillIds`: only IDs of `TRIAGE` or `INVESTIGATION` skills, at most 20: either a skill from `skills/` by the `id` in its `SKILL.md`, or a skill already in the tenant by its Vega id. The list is authoritative on every sync, so an empty list detaches skills attached in the UI. Must be empty when `mode` is `evidence` or `monitor`.
+- `isAlwaysEscalatedToIncident` and `webhookIds`: leave them out unless the user wants the file to own them. Absent means the UI owns the setting; present means the file does (`false` / `[]` clear it). `true` only in `alert` mode. `webhookIds` are Webhook connector UUIDs, at most 20.
 - `mitreTechniques`: list the most specific applicable subtechnique only. Including both `T1078` and `T1078.004` is redundant.
 - Avoid em-dashes; the customer-facing tone is plain.
 - Do not add `mitreTactics`, `dataSourcesIds`, or `tags` to the YAML; these are derived server-side or managed through the UI.

@@ -13,7 +13,7 @@ Detection-as-Code (DaC) moves the authoring surface for tenant-custom detections
 - **Skills as code.** Skills under `skills/`, one `SKILL.md` each, go through the same PR check and the same reconciling sync. Detections in the repository can attach them by the `id` in the file. Skills made in the UI and Vega library skills are never touched. See [Skills](#skills).
 - **Memories as code.** Memories under `memories/` go through the same PR check and the same reconciling sync. The sync only manages the memories it created, marked with a `detections-as-code` label, so memories written in the UI or learned by Vega are never touched. See [Memories](#memories).
 - **Two sync workflows.** An automatic sync runs on push to `main`. A manual `Sync ALL detections, skills and memories` workflow supports bulk deployment for initial onboarding or recovery from drift.
-- **Changes made in Vega flow back as a pull request.** Every 10 hours (or on demand) a third workflow reads the tenant and compares it with `main`. A detection, skill or memory edited, created or deleted in the Vega UI becomes a file change on one branch, opened as a pull request for review. Merging it makes the repository match the tenant again; running `Sync ALL` restores the repository's version. No AI is involved: the comparison is the same field-by-field diff the sync uses. See [Changes made in Vega](#changes-made-in-vega).
+- **Changes made in Vega flow back as a pull request.** Every 10 minutes (or on demand) a third workflow reads the tenant and compares it with `main`. A detection, skill or memory edited, created or deleted in the Vega UI becomes a file change on one branch, opened as a pull request for review. Merging it makes the repository match the tenant again; running `Sync ALL` restores the repository's version. No AI is involved: the comparison is the same field-by-field diff the sync uses. See [Changes made in Vega](#changes-made-in-vega).
 
 ## Prerequisites
 
@@ -113,6 +113,8 @@ Operational fields (`state`, `frequencyCron`, `lookBackSeconds`) are required by
 | `actorFields` | list[string] | `[]` | Priority-ordered normalized field names used to extract the alert's Actor, max 5. Empty uses Vega's per-data-type defaults. |
 | `targetFields` | list[string] | `[]` | Priority-ordered normalized field names used to extract the alert's Target, max 5. Empty uses Vega's per-data-type defaults. |
 | `skillIds` | list[string] | `[]` | IDs of `TRIAGE` or `INVESTIGATION` skills Vega loads when triaging this detection's alerts, max 20. For a skill under `skills/`, use the `id` in its `SKILL.md`. The list is authoritative: an empty list detaches skills added in the UI. Must stay empty for `evidence` and `monitor` detections. |
+| `isAlwaysEscalatedToIncident` | bool | not set | "Always escalate to incident": add every alert to an incident. `true` only in `alert` mode. Leave the key out to manage it in the UI; once set, the file owns it. The sync sends `false` for `evidence` and `monitor` detections. |
+| `webhookIds` | list[string] | not set | UUIDs of Webhook connectors Vega notifies on each alert, max 20. Leave the key out to manage webhooks in the UI; once set, the list is authoritative and `[]` detaches all of them. |
 
 `groupingFields` and `groupingDurationSeconds` were removed from the detection API and are rejected by the sync rather than remapped. `groupingDurationSeconds` becomes `deduplicationWindowSeconds`; `groupingFields` has no single successor and resolves to either `deduplicationFields` or `groupingField` depending on what you meant. See [`docs/fields.md`](docs/fields.md#two-ways-to-reduce-alert-volume).
 
@@ -335,7 +337,7 @@ Four GitHub Actions workflows ship with this template:
 | **Validate PR** | `.github/workflows/validate.yml` | Pull request touching `detections/**`, `skills/**`, `memories/**` or `scripts/**` | Schema lint on each changed YAML and `SKILL.md`. No tenant secret needed; runs cleanly on PRs from forks. |
 | **Sync Detections, Skills and Memories to Vega** | `.github/workflows/sync.yml` | Push to `main` touching `detections/**`, `skills/**`, `memories/**` or `scripts/**`. Also `workflow_dispatch`. | Reconciles everything against the tenant: skills first, then detections batched in chunks of 100, then memories one call each. `dry_run` and `no_deletes` inputs available on manual dispatch. |
 | **Sync ALL detections, skills and memories (manual)** | `.github/workflows/sync-all.yml` | Manual (`workflow_dispatch`) only | Same reconcile, but defaults to `dry_run=true` and `no_deletes=true`. Use for first-run bulk deploy or recovery after a partial sync. |
-| **Pull tenant changes into a pull request** | `.github/workflows/pull.yml` | Every 10 hours (`schedule`). Also `workflow_dispatch`. | Reads the tenant, rewrites the files under `detections/`, `skills/` and `memories/` to match it, and opens or updates one pull request from the `vega/tenant-changes` branch with the difference. Nothing is written to the tenant. See [Changes made in Vega](#changes-made-in-vega). |
+| **Pull tenant changes into a pull request** | `.github/workflows/pull.yml` | Every 10 minutes (`schedule`). Also `workflow_dispatch`. | Reads the tenant, rewrites the files under `detections/`, `skills/` and `memories/` to match it, and opens or updates one pull request from the `vega/tenant-changes` branch with the difference. Nothing is written to the tenant. See [Changes made in Vega](#changes-made-in-vega). |
 
 The sync and pull workflows read `VEGA_ACCESS_KEY` and `VEGA_ACCESS_KEY_ID` from the repository secrets. On scope-enabled (ABAC) tenants where the key is bound to multiple scopes, set the `VEGA_SCOPE_ID` repository variable. The tenant URL is `https://app.vega.io`.
 
@@ -343,7 +345,9 @@ The sync and pull workflows read `VEGA_ACCESS_KEY` and `VEGA_ACCESS_KEY_ID` from
 
 The sync makes the tenant follow the repository. The pull workflow closes the loop in the other direction, so an analyst who tunes a detection in the Vega UI, writes a memory, or deletes a rule does not silently diverge from `main`, and nobody has to copy their change into YAML by hand.
 
-Every 10 hours, or when you run it from the Actions tab, the workflow logs in with the same access key, fetches every detection, skill and memory, and compares each one with its file using the same field-by-field comparison the sync uses to skip no-op updates. For every difference it rewrites the file so that the sync would find nothing to do:
+The schedule is 144 runs a day. On a private repository each run counts against your GitHub Actions minutes; to pull less often, change the `cron` line in `.github/workflows/pull.yml` (for example `'3 * * * *'` for hourly).
+
+Every 10 minutes, or when you run it from the Actions tab, the workflow logs in with the same access key, fetches every detection, skill and memory, and compares each one with its file using the same field-by-field comparison the sync uses to skip no-op updates. For every difference it rewrites the file so that the sync would find nothing to do:
 
 | In Vega | In the repository |
 |---|---|
