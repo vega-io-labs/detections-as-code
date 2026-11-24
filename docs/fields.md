@@ -104,10 +104,8 @@ introduce risk.
   - `disabled` - does not run
   - `test_mode` - runs on schedule; resulting alerts are isolated from incident correlation, used to validate tuning against production data
 - **Accepted aliases:** comparison is case-insensitive; `test` and `test-mode` both resolve to `test_mode`. Prefer the canonical values above so the YAML round-trips cleanly against `git blame`.
-- **Note:** `createDetections` does not accept a state, so the sync creates
-  every detection enabled and applies `disabled` / `test_mode` in a follow-up
-  call reported as a `set_state` row. A rule first synced as `disabled` is
-  therefore enabled for the few seconds between the two calls.
+- **Note:** a new detection is created directly in this state, so a
+  `test_mode` or `disabled` rule never runs as `enabled`, not even briefly.
 
 ```yaml
 state: "test_mode"

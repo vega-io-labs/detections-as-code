@@ -8,6 +8,7 @@ from click.testing import CliRunner
 
 from scripts import sync
 from scripts.client import VegaAPIError
+from scripts.reconciler import build_plan, execute_plan
 
 from .conftest import SKILL_ID, make_skill_md, make_vega, make_vega_skill, make_yaml
 
@@ -338,3 +339,37 @@ def test_dry_run_labels_no_skill(repo, monkeypatch):
     result = run(repo, client, monkeypatch, "--dry-run")
     assert result.exit_code == 0, result.output
     assert "attach_skill_labels" not in client.calls
+
+
+KQL_ERROR = (
+    "trigger cell query cannot be compiled: unknown query operator 'projct'\n"
+    "   ╭─[ query:3:3 ]\n"
+    " 3 │ | projct eventName, sourceIPAddress\n"
+    "   │   ^^^^^^"
+)
+
+
+class RejectingClient(FakeClient):
+    def __init__(self):
+        super().__init__()
+        self.detections = []
+
+    def create_detections(self, detections):
+        self._step("create_detections")
+        results = [
+            {"status": "INVALID", "errors": [{"code": "VALIDATION", "field": "cells", "message": KQL_ERROR}]}
+            for _ in detections
+        ]
+        return {"results": results, "summary": {"committed": False}}
+
+
+def test_a_rejected_test_mode_create_is_one_failure_with_the_full_error():
+    client = RejectingClient()
+    report = execute_plan(client, build_plan([make_yaml(state="test_mode")], []))
+
+    assert [(r.kind, r.success) for r in report.results] == [("create", False)]
+    assert "set_detections_state" not in client.calls
+    details = sync._failure_details(report)
+    assert "projct eventName, sourceIPAddress" in details
+    assert "^^^^^^" in details
+    assert "\n" not in sync._error_cell(report.results[0].error)

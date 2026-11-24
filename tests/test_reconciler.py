@@ -22,6 +22,12 @@ def test_same_skills_in_any_order_is_a_no_op():
     assert build_plan([make_yaml(skillIds=["s2", "s1"])], [current]).no_op_updates == 1
 
 
+def test_new_detection_is_created_in_its_own_state():
+    plan = build_plan([make_yaml(state="test_mode")], [])
+    assert [c.payload["state"] for c in plan.creates] == ["TEST_MODE"]
+    assert not plan.updates
+
+
 def test_skill_change_is_an_update():
     plan = build_plan([make_yaml()], [make_vega(skills=[{"id": "s1"}])])
     assert plan.updates[0].payload["skillIds"] == []

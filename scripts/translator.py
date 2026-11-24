@@ -475,6 +475,7 @@ def yaml_to_create_input(detection: dict[str, Any]) -> dict[str, Any]:
         "frequencyCron": frequency,
         "lookBackSeconds": lookback_raw,
         "mode": mode.value,
+        "state": _state_to_enum(detection.get("state")).value,
         "mitreTechniques": _ensure_list(detection.get("mitreTechniques")),
         "logicDescription": detection.get("logicDescription") or "",
         "attackScenario": detection.get("attackScenario") or "",
@@ -535,11 +536,7 @@ def create_only_warnings(detection: dict[str, Any]) -> list[str]:
 
 
 def yaml_to_update_input(detection: dict[str, Any]) -> dict[str, Any]:
-    create = yaml_to_create_input(detection)
-    payload = {
-        **create,
-        "state": _state_to_enum(detection.get("state")).value,
-    }
+    payload = yaml_to_create_input(detection)
     # updateDetections rejects an empty description, while createDetections
     # requires the key, so an omitted description is sent empty on create and
     # left out on update, where it keeps the tenant value.
@@ -547,7 +544,3 @@ def yaml_to_update_input(detection: dict[str, Any]) -> dict[str, Any]:
         if not payload[key]:
             del payload[key]
     return payload
-
-
-def yaml_state(detection: dict[str, Any]) -> DetectionState:
-    return _state_to_enum(detection.get("state"))

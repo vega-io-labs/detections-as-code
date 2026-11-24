@@ -26,6 +26,16 @@ def test_mode_values(value, expected):
     assert yaml_to_update_input(yaml_doc)["mode"] == expected
 
 
+@pytest.mark.parametrize(
+    ("value", "expected"),
+    [("enabled", "ENABLED"), ("disabled", "DISABLED"), ("test_mode", "TEST_MODE"), ("test", "TEST_MODE")],
+)
+def test_state_is_sent_on_create_and_update(value, expected):
+    yaml_doc = make_yaml(state=value)
+    assert yaml_to_create_input(yaml_doc)["state"] == expected
+    assert yaml_to_update_input(yaml_doc)["state"] == expected
+
+
 @pytest.mark.parametrize("value", ["signal", "finding", "", 3])
 def test_invalid_mode_is_rejected(value):
     with pytest.raises(ValueError, match="invalid mode"):

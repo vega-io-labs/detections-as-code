@@ -14,7 +14,6 @@ Each run, regardless of what changed in git:
 from __future__ import annotations
 
 import re
-from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Callable, Iterable
 
@@ -22,12 +21,10 @@ import yaml
 
 from .client import MODIFY_LABELS_MAX, VegaAPIError, VegaClient
 from .consts import MANAGED_LABEL, UNCLEARABLE_TEXT_FIELDS
-from .consts import DetectionState
 from .labels import ManagedLabel, is_managed_label
 from .plan import ActionKind, ActionResult, Plan, Planned, SyncReport, Write
 from .translator import (
     frequency_interval_seconds,
-    yaml_state,
     yaml_to_create_input,
     yaml_to_update_input,
 )
@@ -36,11 +33,7 @@ from .utils import UniqueKey, chunks, load_unique, yaml_files
 BATCH_SIZE = 100  # createDetections / updateDetections cap per call
 
 
-@dataclass
-class DetectionPlan(Plan):
-    create_state_overrides: dict[str, DetectionState] = field(
-        default_factory=dict
-    )
+DetectionPlan = Plan
 
 
 def _planned(payload: dict[str, Any]) -> Write:
@@ -210,9 +203,6 @@ def build_plan(
             plan.updates.append(_planned(update_payload))
         else:
             plan.creates.append(_planned(yaml_to_create_input(ydet)))
-            desired_state = yaml_state(ydet)
-            if desired_state != DetectionState.ENABLED:
-                plan.create_state_overrides[ext_id] = desired_state
 
     for ext_id, vdet in vega_by_external_id.items():
         if ext_id not in yaml_by_id and not is_library(vdet):
@@ -315,68 +305,11 @@ def _apply_batched(
                 )
 
 
-def _apply_state_overrides(
-    client: VegaClient, plan: DetectionPlan, report: SyncReport
-) -> None:
-    if not plan.create_state_overrides:
-        return
-    try:
-        vega_now = {d["externalId"]: d for d in client.get_detections()}
-    except (VegaAPIError, RuntimeError) as e:
-        for ext_id in plan.create_state_overrides:
-            report.add(
-                ActionResult(
-                    "set_state",
-                    ext_id,
-                    "<unknown>",
-                    False,
-                    f"could not refetch detections: {e}",
-                )
-            )
-        return
-
-    # Group by target state so each unique state needs only chunked calls,
-    # not one call per detection. Each triple is (system_id, external_id, name).
-    by_state: dict[DetectionState, list[tuple[str, str, str]]] = {}
-    for ext_id, state in plan.create_state_overrides.items():
-        d = vega_now.get(ext_id)
-        if not d or not d.get("id"):
-            report.add(
-                ActionResult(
-                    "set_state",
-                    ext_id,
-                    "<unknown>",
-                    False,
-                    "detection not found after create",
-                )
-            )
-            continue
-        by_state.setdefault(state, []).append(
-            (d["id"], ext_id, d.get("name") or ext_id)
-        )
-
-    for state, triples in by_state.items():
-        for batch in chunks(triples, BATCH_SIZE):
-            ids = [t[0] for t in batch]
-            try:
-                client.set_detections_state(ids, state.value)
-            except (VegaAPIError, RuntimeError) as e:
-                err = f"batch API error: {e}"
-                for _, ext_id, name in batch:
-                    report.add(
-                        ActionResult("set_state", ext_id, name, False, err)
-                    )
-                continue
-            for _, ext_id, name in batch:
-                report.add(ActionResult("set_state", ext_id, name, True))
-
-
 def execute_plan(
     client: VegaClient, plan: DetectionPlan, skip_deletes: bool = False
 ) -> SyncReport:
     report = SyncReport()
     _apply_batched("create", plan.creates, client.create_detections, report)
-    _apply_state_overrides(client, plan, report)
     _apply_batched("update", plan.updates, client.update_detections, report)
 
     if not skip_deletes:

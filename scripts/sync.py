@@ -63,6 +63,7 @@ from .translator import yaml_to_create_input
 console = Console()
 
 _STEP_SUMMARY_WIDTH = 160
+_ERROR_CELL_MAX = 200
 
 
 P = TypeVar("P", bound=Plan)
@@ -474,9 +475,23 @@ def _report_table(report: SyncReport) -> Table:
     t.add_column("Error")
     for r in report.results:
         ok = "[green]✓[/]" if r.success else "[red]✗[/]"
-        err = (r.error or "")[:200] if not r.success else ""
+        err = _error_cell(r.error) if not r.success and r.error else ""
         t.add_row(ok, r.target, r.kind, r.external_id, r.name, err)
     return t
+
+
+def _error_cell(error: str) -> str:
+    return error.splitlines()[0][:_ERROR_CELL_MAX]
+
+
+def _failure_details(report: SyncReport) -> str:
+    # A KQL error points at a column with a caret on the lines under it, which
+    # a table cell cannot show, so multi-line errors are printed in full below.
+    return "\n\n".join(
+        f"{r.kind} {r.target} {r.name or r.external_id}:\n{r.error}"
+        for r in report.failed
+        if r.error and "\n" in r.error.strip()
+    )
 
 
 def _print_report(report: SyncReport) -> None:
@@ -496,6 +511,10 @@ def _print_report(report: SyncReport) -> None:
         console.print("[dim](no actions taken)[/]")
         return
     console.print(_report_table(report))
+    details = _failure_details(report)
+    if details:
+        console.print("[red]Errors:[/]")
+        console.print(details, markup=False, highlight=False, soft_wrap=True)
 
 
 def _render_text(*renderables: object) -> str:
@@ -526,6 +545,9 @@ def _write_step_summary(
     body = ""
     if report.results:
         body = f"\n```\n{_render_text(_report_table(report))}```\n"
+        details = _failure_details(report)
+        if details:
+            body += f"\nErrors:\n\n```\n{details}\n```\n"
 
     try:
         with open(summary_file, "a", encoding="utf-8") as fh:

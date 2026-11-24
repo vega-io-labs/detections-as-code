@@ -531,7 +531,7 @@ Inside Vega, each merged change appears as a row in the detection's version-hist
 | Symptom | Likely cause | Fix |
 |---|---|---|
 | Sync fails with `table selectors not found: @X` | Your tenant does not have a connector configured for that data source. | Onboard the connector in the Vega UI before merging, or remove the detection. |
-| Sync fails with `parse pipeline query language` | KQL syntax error. The line and column are shown in the workflow log. | Fix the KQL in a follow-up PR. |
+| Sync fails with `cells: trigger cell query cannot be compiled: ...` (or `parse pipeline query language`) | KQL error, such as a misspelled operator. The PR check reads only the YAML, so it shows only after the merge. The full message, with the line and a caret under the bad token, is under **Errors** in the workflow log and the run summary. The detection is not created and its id is not used up; the rest of the repository still syncs. | Fix the KQL in a follow-up PR. |
 | Sync fails with `external_id "..." already exists` | That id was previously used. | Generate a new UUID; old ids remain reserved permanently. |
 | Sync exits non-zero and a chunk reports `rolled back: ...` | One detection in that chunk failed validation, and the chunk is applied as a single transaction. | Fix the detections whose rows carry a real API error; the rolled-back ones need no change and land on the next run. |
 | Sync fails with `login_machine failed: 500 ... INTERNAL_SERVER_ERROR` | The access key is inactive - deactivated or past its expiry date. | Create a new access key in the Vega UI and update the `VEGA_ACCESS_KEY` and `VEGA_ACCESS_KEY_ID` secrets. |
