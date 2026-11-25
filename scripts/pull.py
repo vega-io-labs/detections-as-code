@@ -41,6 +41,8 @@ from .export import (
     ExportError,
     detection_file,
     detection_matches,
+    library_file,
+    library_matches,
     memory_file,
     memory_matches,
     render,
@@ -48,6 +50,7 @@ from .export import (
     skill_matches,
     slug,
     verify_detection,
+    verify_library,
     verify_memory,
     verify_skill,
 )
@@ -186,19 +189,26 @@ def pull_detections(
 
     for ext_id, vega in tenant.items():
         current = files.get(ext_id)
-        # Library detections are Vega's: the sync never deletes them and this
-        # never writes them, unless a file here already claims one.
-        if current is None and is_library(vega):
-            continue
-        if current is not None and detection_matches(current.doc, vega, ext_to_tenant):
-            continue
-        doc = detection_file(vega, current.doc if current else None, tenant_to_ext)
-        text = render(doc, current.text if current else None, DETECTION_KEY_ORDER)
-        try:
-            verify_detection(text, vega, ext_to_tenant)
-        except ExportError as e:
-            notes.append(f"Detection {vega.get('name') or ext_id!r} not pulled: {e}")
-            continue
+        if is_library(vega):
+            if current is not None and library_matches(current.doc, vega):
+                continue
+            doc = library_file(vega)
+            text = render(doc, current.text if current else None, DETECTION_KEY_ORDER)
+            try:
+                verify_library(text, vega)
+            except ExportError as e:
+                notes.append(f"Detection {vega.get('name') or ext_id!r} not pulled: {e}")
+                continue
+        else:
+            if current is not None and detection_matches(current.doc, vega, ext_to_tenant):
+                continue
+            doc = detection_file(vega, current.doc if current else None, tenant_to_ext)
+            text = render(doc, current.text if current else None, DETECTION_KEY_ORDER)
+            try:
+                verify_detection(text, vega, ext_to_tenant)
+            except ExportError as e:
+                notes.append(f"Detection {vega.get('name') or ext_id!r} not pulled: {e}")
+                continue
         name = vega.get("name") or ext_id
         if current is None:
             stem = slug(name) or ext_id

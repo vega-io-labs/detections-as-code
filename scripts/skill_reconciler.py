@@ -306,7 +306,6 @@ def hold_back_detections(
             if not missing:
                 keep.append(entry)
                 continue
-            plan.create_state_overrides.pop(entry.external_id, None)
             plan.blocked.append(
                 Blocked(
                     kind,

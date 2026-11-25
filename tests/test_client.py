@@ -24,6 +24,7 @@ from scripts.skill_translator import to_update_input as skill_update_input
 from scripts.translator import yaml_to_create_input, yaml_to_update_input
 
 from .conftest import (
+    LIBRARY_ID,
     MANAGED_LABEL_ID,
     make_memory_yaml,
     make_skill_md,
@@ -34,9 +35,15 @@ SCHEMA = build_schema((Path(__file__).parent / "schema.public.graphql").read_tex
 
 
 class FakeGqlClient:
-    def __init__(self, pages: dict[str, list[dict[str, Any]]] | None = None, error: Exception | None = None):
+    def __init__(
+        self,
+        pages: dict[str, list[dict[str, Any]]] | None = None,
+        error: Exception | None = None,
+        library: set[str] | None = None,
+    ):
         self.pages = pages or {}
         self.error = error
+        self.library = library or set()
         self.sent: list[tuple[DocumentNode, dict[str, Any]]] = []
 
     def execute(self, request: Any, variable_values: dict[str, Any]) -> dict[str, Any]:
@@ -46,6 +53,16 @@ class FakeGqlClient:
         if self.error is not None:
             raise self.error
         root = _root_field(document)
+        if root == "getLibraryDetection":
+            op = next(d for d in document.definitions if isinstance(d, OperationDefinitionNode))
+            return {
+                sel.alias.value: (
+                    {"id": variable_values[sel.arguments[0].value.name.value]}
+                    if variable_values[sel.arguments[0].value.name.value] in self.library
+                    else None
+                )
+                for sel in op.selection_set.selections
+            }
         if root in self.pages:
             offset, limit = variable_values["offset"], variable_values["limit"]
             items = self.pages[root]
@@ -79,6 +96,8 @@ def _call_every_method(client: VegaClient) -> None:
     client.create_detections([yaml_to_create_input(detection)])
     client.update_detections([yaml_to_update_input(detection)])
     client.set_detections_state(["d1"], "TEST_MODE")
+    client.set_library_detections_state([LIBRARY_ID], "TEST_MODE")
+    client.existing_library_detection_ids([LIBRARY_ID, "435fb46e-7b61-43f9-90e2-6085b95255c9"])
     client.delete_detection("d1")
     client.get_memories()
     client.create_memory(memory_create_input(memory, [MANAGED_LABEL_ID]))
@@ -99,7 +118,7 @@ def test_every_document_and_payload_matches_the_public_schema():
     gql_client = FakeGqlClient(pages={"getDetections": [], "getMemories": [], "getSkills": []})
     _call_every_method(_client(gql_client))
 
-    assert len(gql_client.sent) == 18
+    assert len(gql_client.sent) == 20
     for document, variables in gql_client.sent:
         root = _root_field(document)
         assert validate(SCHEMA, document) == [], root
@@ -187,3 +206,26 @@ def test_known_error_codes_carry_a_hint():
     limit = [{"extensions": {"error_code_name": "MEMORY_LIMIT_REACHED"}}]
     assert "learned by Vega" in str(VegaAPIError("GraphQL errors", limit))
     assert "permission" not in str(VegaAPIError("GraphQL errors", limit, "AgentsWrite"))
+
+
+def test_library_lookup_returns_only_the_ids_in_the_library():
+    gql_client = FakeGqlClient(library={LIBRARY_ID})
+    found = _client(gql_client).existing_library_detection_ids([LIBRARY_ID, "435fb46e-7b61-43f9-90e2-6085b95255c9"])
+    assert found == {LIBRARY_ID}
+    assert len(gql_client.sent) == 1
+
+
+def test_library_lookup_batches_and_stays_valid_against_the_schema():
+    ids = [f"00000000-0000-4000-8000-{i:012d}" for i in range(client_module.LIBRARY_LOOKUP_BATCH * 2 + 3)]
+    gql_client = FakeGqlClient(library=set(ids[::2]))
+    found = _client(gql_client).existing_library_detection_ids(ids)
+    assert found == set(ids[::2])
+    assert [len(v) for _, v in gql_client.sent] == [client_module.LIBRARY_LOOKUP_BATCH] * 2 + [3]
+    for document, _ in gql_client.sent:
+        assert validate(SCHEMA, document) == []
+
+
+def test_library_lookup_with_nothing_to_look_up_sends_nothing():
+    gql_client = FakeGqlClient()
+    assert _client(gql_client).existing_library_detection_ids([]) == set()
+    assert gql_client.sent == []

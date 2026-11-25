@@ -23,6 +23,8 @@ from tenacity import (
     wait_exponential,
 )
 
+from .utils import chunks
+
 DEFAULT_TENANT_URL = "https://app.vega.io"
 DEFAULT_TIMEOUT_S = 60
 MAX_RETRIES = 3
@@ -33,6 +35,7 @@ MAX_PAGES = 1000  # pagination loop safety; >100k objects is implausible
 DETECTION_PAGE_SIZE = 100
 MEMORY_PAGE_SIZE = 500
 SKILL_PAGE_SIZE = 100
+LIBRARY_LOOKUP_BATCH = 50
 
 ACCESS_DENIED = "ACCESS_DENIED"
 MEMORY_LIMIT_REACHED = "MEMORY_LIMIT_REACHED"
@@ -356,6 +359,43 @@ class VegaClient:
         return self._execute(
             query, {"input": {"ids": detection_ids, "state": state}}
         )["setDetectionsState"]
+
+    def set_library_detections_state(
+        self, library_detection_ids: list[str], state: str
+    ) -> dict[str, Any]:
+        query = """
+        mutation SetLibraryDetectionsState($input: SetLibraryDetectionsStateInput!) {
+          setLibraryDetectionsState(input: $input) {
+            results {
+              libraryDetectionId
+              status
+              detection { id externalId state }
+            }
+            userErrors { code message path }
+          }
+        }
+        """
+        return self._execute(
+            query,
+            {"input": {"libraryDetectionIds": library_detection_ids, "state": state}},
+        )["setLibraryDetectionsState"]
+
+    def existing_library_detection_ids(self, ids: list[str]) -> set[str]:
+        found: set[str] = set()
+        for batch in chunks(ids, LIBRARY_LOOKUP_BATCH):
+            # One aliased request per batch: a lookup per file would spend the
+            # tenant's rate limit on the first sync of a large library repo.
+            params = ", ".join(f"$i{n}: ID!" for n in range(len(batch)))
+            fields = " ".join(
+                f"d{n}: getLibraryDetection(id: $i{n}) {{ id }}"
+                for n in range(len(batch))
+            )
+            data = self._execute(
+                f"query GetLibraryDetections({params}) {{ {fields} }}",
+                {f"i{n}": i for n, i in enumerate(batch)},
+            )
+            found |= {d["id"] for d in data.values() if d}
+        return found
 
     def delete_detection(self, detection_id: str) -> dict[str, Any]:
         query = """

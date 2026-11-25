@@ -22,12 +22,20 @@ import yaml
 
 from .client import MODIFY_LABELS_MAX, VegaAPIError, VegaClient
 from .consts import MANAGED_LABEL, UNCLEARABLE_TEXT_FIELDS
-from .consts import DetectionState
 from .labels import ManagedLabel, is_managed_label
-from .plan import ActionKind, ActionResult, Plan, Planned, SyncReport, Write
+from .plan import (
+    ActionKind,
+    ActionResult,
+    Blocked,
+    Plan,
+    Planned,
+    SyncReport,
+    Write,
+)
 from .translator import (
     frequency_interval_seconds,
-    yaml_state,
+    is_library_file,
+    library_state_input,
     yaml_to_create_input,
     yaml_to_update_input,
 )
@@ -38,9 +46,17 @@ BATCH_SIZE = 100  # createDetections / updateDetections cap per call
 
 @dataclass
 class DetectionPlan(Plan):
-    create_state_overrides: dict[str, DetectionState] = field(
-        default_factory=dict
-    )
+    # Library detections go through setLibraryDetectionsState, which adds one
+    # that is missing and moves one that is there, so both lists share a call.
+    library_adds: list[Write] = field(default_factory=list)
+    library_states: list[Write] = field(default_factory=list)
+
+    def summary(self) -> str:
+        return (
+            f"{super().summary()} "
+            f"library_adds={len(self.library_adds)} "
+            f"library_states={len(self.library_states)}"
+        )
 
 
 def _planned(payload: dict[str, Any]) -> Write:
@@ -193,34 +209,103 @@ def is_no_op_update(
 def build_plan(
     yaml_detections: list[dict[str, Any]],
     vega_detections: list[dict[str, Any]],
+    unknown_library_ids: frozenset[str] = frozenset(),
 ) -> DetectionPlan:
     vega_by_external_id = {
         d["externalId"]: d for d in vega_detections if d.get("externalId")
     }
-    yaml_by_id = {str(d["id"]): d for d in yaml_detections}
+    yaml_by_id = {str(d["id"]).strip(): d for d in yaml_detections}
 
     plan = DetectionPlan()
 
     for ext_id, ydet in yaml_by_id.items():
-        if ext_id in vega_by_external_id:
+        vdet = vega_by_external_id.get(ext_id)
+        if is_library_file(ydet):
+            _plan_library(plan, ydet, vdet, unknown_library_ids)
+            continue
+        if vdet is not None and is_library(vdet):
+            # An update would turn Vega's detection into a custom copy that no
+            # longer gets library updates, so the file has to say it is one.
+            plan.blocked.append(
+                Blocked(
+                    "update",
+                    ext_id,
+                    str(ydet.get("name") or ext_id),
+                    "this id is a Vega library detection in the tenant. Write "
+                    "the file as a library detection (id, name, library: true, "
+                    "state); the next pull does it for you",
+                )
+            )
+            continue
+        if vdet is not None:
             update_payload = yaml_to_update_input(ydet)
-            if is_no_op_update(update_payload, vega_by_external_id[ext_id]):
+            if is_no_op_update(update_payload, vdet):
                 plan.no_op_updates += 1
                 continue
             plan.updates.append(_planned(update_payload))
         else:
             plan.creates.append(_planned(yaml_to_create_input(ydet)))
-            desired_state = yaml_state(ydet)
-            if desired_state != DetectionState.ENABLED:
-                plan.create_state_overrides[ext_id] = desired_state
 
     for ext_id, vdet in vega_by_external_id.items():
-        if ext_id not in yaml_by_id and not is_library(vdet):
-            plan.deletes.append(
-                Planned(ext_id, vdet.get("name") or "<unknown>", vdet["id"])
-            )
+        if ext_id in yaml_by_id:
+            continue
+        # A library detection is removed only when this repository added or
+        # adopted it, which the label records. Repositories from before
+        # library files existed therefore never remove one.
+        if is_library(vdet) and not _has_managed_label(vdet):
+            continue
+        plan.deletes.append(
+            Planned(ext_id, vdet.get("name") or "<unknown>", vdet["id"])
+        )
 
     return plan
+
+
+def _plan_library(
+    plan: DetectionPlan,
+    ydet: dict[str, Any],
+    vdet: dict[str, Any] | None,
+    unknown_library_ids: frozenset[str],
+) -> None:
+    payload = library_state_input(ydet)
+    ext_id, name = payload["libraryDetectionId"], payload["name"]
+    entry: Write = Planned(ext_id, name, payload)
+    if vdet is None:
+        if ext_id in unknown_library_ids:
+            plan.blocked.append(
+                Blocked(
+                    "add",
+                    ext_id,
+                    name,
+                    "no Vega library detection has this id. Copy the id from "
+                    "the library in the Vega UI or from listLibraryDetections",
+                )
+            )
+        else:
+            plan.library_adds.append(entry)
+    elif not is_library(vdet):
+        plan.blocked.append(
+            Blocked(
+                "set_state",
+                ext_id,
+                name,
+                "the tenant detection with this id is no longer connected to "
+                "the Vega library (it was detached in the UI). Remove "
+                "'library: true' and give the file the detection's fields; "
+                "the next pull does it for you",
+            )
+        )
+    elif vdet.get("state") == payload["state"]:
+        plan.no_op_updates += 1
+    else:
+        plan.library_states.append(entry)
+
+
+def _has_managed_label(vega_detection: dict[str, Any]) -> bool:
+    return any(
+        is_managed_label(lbl.get("name") or "")
+        for lbl in vega_detection.get("labels") or []
+    )
 
 
 def is_library(vega_detection: dict[str, Any]) -> bool:
@@ -315,60 +400,58 @@ def _apply_batched(
                 )
 
 
-def _apply_state_overrides(
+def _apply_library(
     client: VegaClient, plan: DetectionPlan, report: SyncReport
 ) -> None:
-    if not plan.create_state_overrides:
-        return
-    try:
-        vega_now = {d["externalId"]: d for d in client.get_detections()}
-    except (VegaAPIError, RuntimeError) as e:
-        for ext_id in plan.create_state_overrides:
-            report.add(
-                ActionResult(
-                    "set_state",
-                    ext_id,
-                    "<unknown>",
-                    False,
-                    f"could not refetch detections: {e}",
-                )
-            )
-        return
+    adds = {e.external_id for e in plan.library_adds}
+    by_state: dict[str, list[Write]] = {}
+    for entry in [*plan.library_adds, *plan.library_states]:
+        by_state.setdefault(entry.payload["state"], []).append(entry)
 
-    # Group by target state so each unique state needs only chunked calls,
-    # not one call per detection. Each triple is (system_id, external_id, name).
-    by_state: dict[DetectionState, list[tuple[str, str, str]]] = {}
-    for ext_id, state in plan.create_state_overrides.items():
-        d = vega_now.get(ext_id)
-        if not d or not d.get("id"):
-            report.add(
-                ActionResult(
-                    "set_state",
-                    ext_id,
-                    "<unknown>",
-                    False,
-                    "detection not found after create",
-                )
-            )
-            continue
-        by_state.setdefault(state, []).append(
-            (d["id"], ext_id, d.get("name") or ext_id)
-        )
-
-    for state, triples in by_state.items():
-        for batch in chunks(triples, BATCH_SIZE):
-            ids = [t[0] for t in batch]
+    for state, entries in by_state.items():
+        for batch in chunks(entries, BATCH_SIZE):
+            ids = [e.external_id for e in batch]
             try:
-                client.set_detections_state(ids, state.value)
+                response = client.set_library_detections_state(ids, state)
             except (VegaAPIError, RuntimeError) as e:
-                err = f"batch API error: {e}"
-                for _, ext_id, name in batch:
+                for entry in batch:
+                    kind: ActionKind = "add" if entry.external_id in adds else "set_state"
                     report.add(
-                        ActionResult("set_state", ext_id, name, False, err)
+                        ActionResult(
+                            kind, entry.external_id, entry.name, False,
+                            f"batch API error: {e}",
+                        )
                     )
                 continue
-            for _, ext_id, name in batch:
-                report.add(ActionResult("set_state", ext_id, name, True))
+            results = {
+                r.get("libraryDetectionId"): r for r in response.get("results") or []
+            }
+            errors: dict[int, dict[str, Any]] = {}
+            for err in response.get("userErrors") or []:
+                path = err.get("path") or []
+                if path and str(path[-1]).isdigit():
+                    errors[int(path[-1])] = err
+            for i, entry in enumerate(batch):
+                kind = "add" if entry.external_id in adds else "set_state"
+                res = results.get(entry.external_id) or {}
+                if res.get("status") in ("ADDED", "UPDATED", "UNCHANGED"):
+                    report.add(
+                        ActionResult(
+                            kind, entry.external_id, entry.name, True,
+                            object_id=(res.get("detection") or {}).get("id"),
+                        )
+                    )
+                    continue
+                err = errors.get(i)
+                message = (
+                    f"{err.get('code')}: {err.get('message')}"
+                    if err
+                    else f"library detection not set to {state} "
+                    f"(status {res.get('status') or 'missing'})"
+                )
+                report.add(
+                    ActionResult(kind, entry.external_id, entry.name, False, message)
+                )
 
 
 def execute_plan(
@@ -376,8 +459,8 @@ def execute_plan(
 ) -> SyncReport:
     report = SyncReport()
     _apply_batched("create", plan.creates, client.create_detections, report)
-    _apply_state_overrides(client, plan, report)
     _apply_batched("update", plan.updates, client.update_detections, report)
+    _apply_library(client, plan, report)
 
     if not skip_deletes:
         for entry in plan.deletes:
@@ -403,7 +486,7 @@ def unlabelled_detections(
         d
         for d in vega_detections
         if d.get("externalId") in managed_ids
-        and not any(is_managed_label(lbl.get("name") or "") for lbl in d.get("labels") or [])
+        and not _has_managed_label(d)
     ]
 
 
@@ -419,7 +502,7 @@ def label_managed_detections(
     targets |= {
         r.object_id: (r.external_id, r.name)
         for r in report.results
-        if r.success and r.kind == "create" and r.object_id
+        if r.success and r.kind in ("create", "add") and r.object_id
     }
     if not targets:
         return

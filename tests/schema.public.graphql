@@ -7,6 +7,12 @@
 # not call were dropped; every input and type it sends is kept as is.
 
 type Query {
+  """Get one detection from the Vega library by ID, with its Vega KQL cells and historical matches. Returns null if no library detection has this ID."""
+  getLibraryDetection(
+    """Identifier of the library detection, as returned by [listLibraryDetections](/api-reference/queries/browse-the-vega-detection-library)."""
+    id: ID!
+  ): LibraryDetection
+
   """
   Retrieve detections with filtering and offset/limit pagination.
   
@@ -900,6 +906,25 @@ enum SkillType {
 }
 
 type Mutation {
+  """Set the state of one or more Vega library detections in the organization: enabled, in test mode or disabled.
+
+  A library detection the organization has not added yet is added in the requested state. A
+  library detection it already added moves to the requested state. Either way the
+  organization's detection stays connected to the library, so Vega's updates to its logic
+  keep reaching it. Each result returns that detection in `results[].detection`; edit it
+  afterwards like any other detection with
+  [updateDetections](/api-reference/mutations/update-detections).
+
+  Library detections are handled independently: one that fails does not stop the others.
+
+  Supports up to 100 library detections per request. The request fails as a whole when it
+  would take the organization past its detection limit or its limit of running detections.
+  """
+  setLibraryDetectionsState(
+    """Library detections and the state to put them in."""
+    input: SetLibraryDetectionsStateInput!
+  ): SetLibraryDetectionsStatePayload!
+
   """
   Create one or more detections.
   
@@ -1776,3 +1801,118 @@ type ModifyObjectLabelsPayload {
   userErrors: [UserError!]!
 }
 
+"""Progress of the historical match count for one day."""
+enum LibraryDetectionHistoricalHitsDayStatus {
+  """The count for the day is queued."""
+  PENDING
+  """The count for the day is running."""
+  RUNNING
+  """The count for the day finished and `count` holds the result."""
+  SUCCEEDED
+  """The count for the day failed."""
+  FAILED
+  """Vega does not count historical matches for this detection, for example because the organization has no data source it reads."""
+  NOT_APPLICABLE
+}
+
+"""Number of events a library detection's query matched in one day of the organization's past data."""
+type LibraryDetectionHistoricalHitsDay {
+  """Start of the UTC day the count covers."""
+  startsAt: Time!
+  """Number of matches on that day. Null until the count for the day succeeds."""
+  count: Int
+  """Progress of the count for the day."""
+  status: LibraryDetectionHistoricalHitsDayStatus!
+}
+
+"""Matches a library detection's query found in the organization's data over the last days, counted by Vega before the organization adds the detection. Detections the organization already runs are not counted."""
+type LibraryDetectionHistoricalHits {
+  """Sum of the daily matches. Null when the count succeeded on too few days to give a total (more than 80% of `days` must succeed)."""
+  total: Int
+  """One entry per counted day, oldest first. Covers the last 7 days."""
+  days: [LibraryDetectionHistoricalHitsDay!]!
+}
+
+"""A detection Vega ships in its library. Adding it to the organization with [setLibraryDetectionsState](/api-reference/mutations/set-the-state-of-vega-library-detections) makes it one of the organization's detections, and Vega keeps its logic up to date."""
+type LibraryDetection {
+  """Identifier of the library detection. Pass it to [setLibraryDetectionsState](/api-reference/mutations/set-the-state-of-vega-library-detections)."""
+  id: ID!
+  """Name of the library detection."""
+  name: String!
+  """Severity level of the detection."""
+  severity: DetectionSeverity!
+  """How the detection's alerts take part in triage, correlation and incident escalation once the organization adds it."""
+  mode: DetectionMode!
+  """Human-readable detection logic description. Null if not set."""
+  logicDescription: String
+  """Human-readable attack scenario description. Null if not set."""
+  attackScenario: String
+  """Names of the mapped MITRE ATT&CK tactics, for example `Credential Access`."""
+  mitreTactics: [String!]!
+  """IDs of the mapped MITRE ATT&CK techniques and sub-techniques, for example `T1555.003`."""
+  mitreTechniques: [String!]!
+  """IDs of the data sources the detection reads from, whether or not the organization has them connected."""
+  dataSourcesIds: [ID!]!
+  """Domains of the data sources the detection reads from, for example `Identity` or `Endpoint`. Empty when none of them has a domain."""
+  domains: [String!]!
+  """Detection tags."""
+  tags: [String!]!
+  """Labels on the library detection: one Vega sets for each of its `tags`, plus the labels the organization attached. Empty if it has no labels."""
+  labels: [Label!]!
+  """Reference URLs related to the detection."""
+  references: [String!]!
+  """How often the triggering cell runs while the added detection is enabled or in test mode, for example `30m`."""
+  frequencyCron: String!
+  """Lookback window, in seconds, used by the triggering cell."""
+  lookBackSeconds: Int!
+  """Vega KQL query cells of the detection. Exactly one cell has `trigger` set to true."""
+  cells: [DetectionCellInfo!]!
+  """True when the organization has data the detection can run on."""
+  isApplicable: Boolean!
+  """The organization's detection created from this library detection, as [getDetections](/api-reference/queries/get-detections) returns it. Its `id` is the one [setDetectionsState](/api-reference/mutations/set-detections-state) and [updateDetections](/api-reference/mutations/update-detections) take. Null when the organization has not added the library detection."""
+  detection: DetectionInfo
+  """Historical matches of the detection in the organization's data. Null when Vega has not counted them for this detection or historical matches are not available to the organization."""
+  historicalHits: LibraryDetectionHistoricalHits
+  """When Vega added the detection to the library."""
+  createdAt: Time!
+  """When Vega last changed the detection in the library."""
+  updatedAt: Time!
+}
+
+"""Input for setting the state of Vega library detections in the organization."""
+input SetLibraryDetectionsStateInput {
+  """IDs of the library detections, as returned by [listLibraryDetections](/api-reference/queries/browse-the-vega-detection-library). Minimum 1, maximum 100. Duplicate IDs are deduplicated."""
+  libraryDetectionIds: [ID!]!
+  """State to put the library detections in: `ENABLED`, `TEST_MODE` or `DISABLED`. `DRAFT` is rejected."""
+  state: DetectionState!
+}
+
+"""Outcome for one library detection of a [setLibraryDetectionsState](/api-reference/mutations/set-the-state-of-vega-library-detections) request."""
+enum LibraryDetectionStateStatus {
+  """The organization had not added the library detection. It is now one of the organization's detections, in the requested state."""
+  ADDED
+  """The organization had added the library detection in another state. Its detection moved to the requested state."""
+  UPDATED
+  """The organization's detection was already in the requested state. Nothing changed."""
+  UNCHANGED
+  """Nothing changed for this library detection. `userErrors` holds the reason."""
+  FAILED
+}
+
+"""Outcome for one library detection of a [setLibraryDetectionsState](/api-reference/mutations/set-the-state-of-vega-library-detections) request."""
+type LibraryDetectionStateResult {
+  """ID of the library detection from the request."""
+  libraryDetectionId: ID!
+  """What the request changed for this library detection."""
+  status: LibraryDetectionStateStatus!
+  """The organization's detection for this library detection, in its state after the request. Null when `status` is `FAILED`, and in the rare case Vega saved the change but could not read the detection back; [listLibraryDetections](/api-reference/queries/browse-the-vega-detection-library) with `isAdded: true` returns it."""
+  detection: DetectionInfo
+}
+
+"""Response returned after setting the state of Vega library detections."""
+type SetLibraryDetectionsStatePayload {
+  """One entry per distinct requested library detection, in request order."""
+  results: [LibraryDetectionStateResult!]!
+  """One entry per library detection whose `status` is `FAILED`, with `path` pointing at its position in `libraryDetectionIds`. `NOT_FOUND` for an ID that is not in the library, `INVALID_INPUT` for a malformed ID, `CONFLICT` when Vega could not save the change. Empty when no result has `status` `FAILED`."""
+  userErrors: [UserError!]!
+}

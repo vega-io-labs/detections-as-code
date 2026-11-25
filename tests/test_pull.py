@@ -10,15 +10,21 @@ from scripts import pull
 from scripts.client import VegaAPIError
 from scripts.pull import pull_detections, pull_memories, pull_skills
 from scripts.memory_reconciler import MemoryState
+from scripts.reconciler import build_plan
+from scripts.translator import validate_detection_file
 
 from .conftest import (
     LABELS,
+    LIBRARY_ID,
+    LIBRARY_NAME,
     SKILL_ID,
     SKILL_TENANT_ID,
     YAML_ID,
+    make_library_yaml,
     make_memory_yaml,
     make_skill_md,
     make_vega,
+    make_vega_library,
     make_vega_memory,
     make_vega_skill,
     make_yaml,
@@ -126,9 +132,108 @@ def test_detection_deleted_in_the_ui_removes_the_file(repo):
     assert changes[0].text is None
 
 
-def test_library_detections_are_not_pulled(repo):
-    library = make_vega(id="lib", externalId="lib", createdBy={"principalType": "vega_library"})
-    assert pull_detections(dirs(repo, "detections"), [make_vega(), library], {}) == ([], [])
+def test_library_detection_is_pulled_as_a_library_file(repo):
+    changes, notes = pull_detections(dirs(repo, "detections"), [make_vega(), make_vega_library()], {})
+    assert notes == []
+    assert [(c.action, c.path.name) for c in changes] == [
+        ("add", "rdp-file-created-by-uncommon-application.yaml")
+    ]
+    assert changes[0].text == (
+        f'id: "{LIBRARY_ID}"\nname: "{LIBRARY_NAME}"\nlibrary: true\nstate: "test_mode"\n'
+    )
+
+
+def test_pulled_library_file_passes_validation_and_syncs_as_a_no_op(repo):
+    changes, _ = pull_detections(dirs(repo, "detections"), [make_vega_library()], {})
+    doc = yaml.safe_load(next(c.text for c in changes if c.action == "add"))
+    validate_detection_file(doc)
+    assert build_plan([doc], [make_vega_library()]).no_op_updates == 1
+
+
+def _write_library(repo, **overrides):
+    path = repo / "detections" / "rdp.yaml"
+    path.write_text(yaml.safe_dump(make_library_yaml(**overrides), sort_keys=False))
+    return path
+
+
+def test_matching_library_file_produces_no_change(repo):
+    _write_library(repo)
+    assert pull_detections(dirs(repo, "detections"), [make_vega(), make_vega_library()], {}) == ([], [])
+
+
+def test_library_fields_vega_owns_never_change_the_file(repo):
+    _write_library(repo)
+    vega = make_vega_library(severity="CRITICAL", cells=[], lookBackSeconds=9000, skills=[{"id": "s"}])
+    assert pull_detections(dirs(repo, "detections"), [make_vega(), vega], {}) == ([], [])
+
+
+def test_library_state_changed_in_the_ui_updates_the_file(repo):
+    _write_library(repo)
+    changes, _ = pull_detections(dirs(repo, "detections"), [make_vega(), make_vega_library(state="ENABLED")], {})
+    assert [(c.action, c.path.name, c.detail) for c in changes] == [("update", "rdp.yaml", "state")]
+    assert yaml.safe_load(changes[0].text)["state"] == "enabled"
+
+
+def test_library_renamed_by_vega_updates_the_name(repo):
+    _write_library(repo)
+    changes, _ = pull_detections(dirs(repo, "detections"), [make_vega(), make_vega_library(name="RDP file")], {})
+    assert [(c.action, c.detail) for c in changes] == [("update", "name")]
+
+
+def test_library_file_keeps_its_comments_and_test_spelling(repo):
+    path = repo / "detections" / "rdp.yaml"
+    path.write_text(f"# why we run it\nid: {LIBRARY_ID}\nname: {LIBRARY_NAME}\nlibrary: true\nstate: test\n")
+    assert pull_detections(dirs(repo, "detections"), [make_vega(), make_vega_library()], {}) == ([], [])
+    changes, _ = pull_detections(dirs(repo, "detections"), [make_vega(), make_vega_library(state="DISABLED")], {})
+    assert changes[0].text.startswith("# why we run it\n")
+    assert "state: disabled" in changes[0].text
+
+
+def test_library_file_without_a_name_gets_one(repo):
+    path = repo / "detections" / "rdp.yaml"
+    path.write_text(f"id: {LIBRARY_ID}\nlibrary: true\nstate: test_mode\n")
+    changes, _ = pull_detections(dirs(repo, "detections"), [make_vega(), make_vega_library()], {})
+    assert yaml.safe_load(changes[0].text)["name"] == LIBRARY_NAME
+
+
+def test_custom_file_for_a_library_detection_is_rewritten_as_a_library_file(repo):
+    path = repo / "detections" / "rdp.yaml"
+    path.write_text(yaml.safe_dump(make_yaml(id=LIBRARY_ID, name=LIBRARY_NAME, severity=2)))
+    changes, notes = pull_detections(dirs(repo, "detections"), [make_vega(), make_vega_library()], {})
+    assert notes == []
+    assert [(c.action, c.path.name) for c in changes] == [("update", "rdp.yaml")]
+    assert yaml.safe_load(changes[0].text) == make_library_yaml()
+
+
+def test_detached_library_detection_turns_its_file_into_a_custom_one(repo):
+    _write_library(repo)
+    detached = make_vega_library(createdBy={"principalType": "user"}, labels=[])
+    changes, notes = pull_detections(dirs(repo, "detections"), [make_vega(), detached], {})
+    assert notes == []
+    doc = yaml.safe_load(changes[0].text)
+    assert "library" not in doc and doc["severity"] == 2 and doc["cells"][0]["trigger"] is True
+    validate_detection_file(doc)
+
+
+def test_library_detection_removed_in_the_ui_removes_its_file(repo):
+    _write_library(repo)
+    changes, _ = pull_detections(dirs(repo, "detections"), [make_vega()], {})
+    assert [(c.action, c.path.name, c.external_id) for c in changes] == [("remove", "rdp.yaml", LIBRARY_ID)]
+
+
+def test_library_detection_with_an_id_this_repository_rejects_is_a_note(repo):
+    odd = make_vega_library(externalId="NOT-A-UUID")
+    changes, notes = pull_detections(dirs(repo, "detections"), [make_vega(), odd], {})
+    assert changes == []
+    assert len(notes) == 1 and "not pulled" in notes[0]
+
+
+def test_many_library_detections_get_distinct_files(repo):
+    vega = [make_vega()] + [
+        make_vega_library(id=f"i{n}", externalId=f"00000000-0000-4000-8000-{n:012d}") for n in range(3)
+    ]
+    changes, _ = pull_detections(dirs(repo, "detections"), vega, {})
+    assert len({c.path for c in changes}) == 3
 
 
 def test_skill_ids_use_the_repository_id_when_skills_are_managed(repo):
@@ -353,3 +458,4 @@ def test_different_content_is_not_a_rename(repo):
     other = make_vega_memory(title="Something else", content="Different content")
     changes, _ = pull_memories(dirs(repo, "memories"), state([other]))
     assert sorted(c.action for c in changes) == ["add", "remove"]
+

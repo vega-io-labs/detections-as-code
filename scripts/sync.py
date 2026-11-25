@@ -58,11 +58,12 @@ from .skill_reconciler import (
     skill_ids_by_external_id,
 )
 from .skill_translator import SkillSpec
-from .translator import yaml_to_create_input
+from .translator import is_library_file, validate_detection_file
 
 console = Console()
 
 _STEP_SUMMARY_WIDTH = 160
+_ERROR_CELL_MAX = 200
 
 
 P = TypeVar("P", bound=Plan)
@@ -180,6 +181,7 @@ class DetectionSync(Sync[DetectionPlan]):
         self.dry_run = dry_run
         self.yamls: list[dict[str, Any]] = []
         self.vega: list[dict[str, Any]] = []
+        self.unknown_library_ids: frozenset[str] = frozenset()
 
     def load(self) -> None:
         console.print(
@@ -189,12 +191,21 @@ class DetectionSync(Sync[DetectionPlan]):
         # Skills are written before detections are planned, so a broken
         # detection has to stop the run here, before anything is written.
         for doc in self.yamls:
-            yaml_to_create_input(doc)
+            validate_detection_file(doc)
         console.print(f"Loaded [bold]{len(self.yamls)}[/] YAML detection(s).")
 
     def fetch(self, client: VegaClient) -> None:
         self.vega = client.get_detections()
         console.print(f"Found [bold]{len(self.vega)}[/] detection(s) in tenant.")
+        in_tenant = {d.get("externalId") for d in self.vega}
+        to_add = [
+            str(doc["id"]).strip()
+            for doc in self.yamls
+            if is_library_file(doc) and str(doc["id"]).strip() not in in_tenant
+        ]
+        if to_add:
+            found = client.existing_library_detection_ids(to_add)
+            self.unknown_library_ids = frozenset(to_add) - found
 
     def build(self) -> None:
         yamls = self.yamls
@@ -212,7 +223,7 @@ class DetectionSync(Sync[DetectionPlan]):
             yamls, unresolved = resolve_detection_skill_ids(
                 yamls, self.skills.specs, known
             )
-        self.plan = build_plan(yamls, self.vega)
+        self.plan = build_plan(yamls, self.vega, self.unknown_library_ids)
         hold_back_detections(self.plan, unresolved)
 
     def apply(
@@ -230,7 +241,7 @@ class DetectionSync(Sync[DetectionPlan]):
         if self.plan is None:
             return []
         to_label = len(unlabelled_detections(self.vega, self._managed_ids()))
-        to_label += len(self.plan.creates)
+        to_label += len(self.plan.creates) + len(self.plan.library_adds)
         if not to_label:
             return []
         return [
@@ -450,6 +461,9 @@ def _plan_table(title: str, plan: Plan) -> Table:
     t.add_column("Count", justify="right")
     t.add_row("[green]create[/]", str(len(plan.creates)))
     t.add_row("[yellow]update[/]", str(len(plan.updates)))
+    if isinstance(plan, DetectionPlan):
+        t.add_row("[green]add from library[/]", str(len(plan.library_adds)))
+        t.add_row("[yellow]library state[/]", str(len(plan.library_states)))
     t.add_row("[red]delete[/]", str(len(plan.deletes)))
     t.add_row("[red]blocked[/]", str(len(plan.blocked)))
     t.add_row("[dim]no-op skipped[/]", str(plan.no_op_updates))
@@ -474,9 +488,23 @@ def _report_table(report: SyncReport) -> Table:
     t.add_column("Error")
     for r in report.results:
         ok = "[green]✓[/]" if r.success else "[red]✗[/]"
-        err = (r.error or "")[:200] if not r.success else ""
+        err = _error_cell(r.error) if not r.success and r.error else ""
         t.add_row(ok, r.target, r.kind, r.external_id, r.name, err)
     return t
+
+
+def _error_cell(error: str) -> str:
+    return error.splitlines()[0][:_ERROR_CELL_MAX]
+
+
+def _failure_details(report: SyncReport) -> str:
+    # A KQL error points at a column with a caret on the lines under it, which
+    # a table cell cannot show, so multi-line errors are printed in full below.
+    return "\n\n".join(
+        f"{r.kind} {r.target} {r.name or r.external_id}:\n{r.error}"
+        for r in report.failed
+        if r.error and "\n" in r.error.strip()
+    )
 
 
 def _print_report(report: SyncReport) -> None:
@@ -496,6 +524,10 @@ def _print_report(report: SyncReport) -> None:
         console.print("[dim](no actions taken)[/]")
         return
     console.print(_report_table(report))
+    details = _failure_details(report)
+    if details:
+        console.print("[red]Errors:[/]")
+        console.print(details, markup=False, highlight=False, soft_wrap=True)
 
 
 def _render_text(*renderables: object) -> str:
@@ -526,6 +558,9 @@ def _write_step_summary(
     body = ""
     if report.results:
         body = f"\n```\n{_render_text(_report_table(report))}```\n"
+        details = _failure_details(report)
+        if details:
+            body += f"\nErrors:\n\n```\n{details}\n```\n"
 
     try:
         with open(summary_file, "a", encoding="utf-8") as fh:

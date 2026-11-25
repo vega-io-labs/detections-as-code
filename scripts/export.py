@@ -40,12 +40,17 @@ from .reconciler import (
 )
 from .skill_reconciler import is_no_op as skill_is_no_op
 from .skill_translator import SkillSpec, parse_skill, split_frontmatter
-from .translator import frequency_interval_seconds, yaml_to_update_input
+from .translator import (
+    frequency_interval_seconds,
+    library_state_input,
+    yaml_to_update_input,
+)
 from .utils import format_utc, parse_time
 
 DETECTION_KEY_ORDER: tuple[str, ...] = (
     "id",
     "name",
+    "library",
     "severity",
     "state",
     "frequencyCron",
@@ -312,6 +317,33 @@ def detection_file(
     _ui_owned_unless_set(doc, vega, existing)
     _cells(doc, list(vega.get("cells") or []), existing)
     return doc
+
+
+def library_file(vega: dict[str, Any]) -> dict[str, Any]:
+    return {
+        "id": vega["externalId"],
+        "name": vega["name"],
+        "library": True,
+        "state": str(vega.get("state") or "ENABLED").lower(),
+    }
+
+
+def library_matches(doc: dict[str, Any], vega: dict[str, Any]) -> bool:
+    """Whether `doc` is a library file the sync and the pull leave as it is."""
+    try:
+        payload = library_state_input(doc)
+    except (ValueError, KeyError):
+        return False
+    return payload["state"] == vega.get("state") and doc.get("name") == vega.get("name")
+
+
+def verify_library(text: str, vega: dict[str, Any]) -> None:
+    doc = load_detection_doc(text)
+    if str(doc.get("id")) != vega["externalId"] or not library_matches(doc, vega):
+        raise ExportError(
+            f"{vega['externalId']}: the library detection as it is in the "
+            f"tenant does not pass this repository's validation"
+        )
 
 
 def detection_payload(
