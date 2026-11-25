@@ -459,24 +459,3 @@ def test_different_content_is_not_a_rename(repo):
     changes, _ = pull_memories(dirs(repo, "memories"), state([other]))
     assert sorted(c.action for c in changes) == ["add", "remove"]
 
-
-def test_a_triage_cell_does_not_stop_a_detection_from_being_pulled(repo):
-    triage = {"name": "Triage", "query": "", "trigger": False}
-    vega = make_vega(severity="LOW", cells=[triage, *make_vega()["cells"]])
-    changes, notes = pull_detections(dirs(repo, "detections"), [vega], {})
-    assert notes == []
-    doc = yaml.safe_load(changes[0].text)
-    assert doc["severity"] == 1 and "cells" not in doc and doc["query"]
-    assert build_plan([doc], [vega]).no_op_updates == 1
-
-
-def test_detached_library_copy_with_its_triage_cell_is_pulled_as_a_custom_file(repo):
-    _write_library(repo)
-    triage = {"name": "Triage", "query": "", "trigger": False}
-    detached = make_vega_library(createdBy={"principalType": "user"}, cells=[triage, *make_vega_library()["cells"]])
-    changes, notes = pull_detections(dirs(repo, "detections"), [make_vega(), detached], {})
-    assert notes == []
-    doc = yaml.safe_load(changes[0].text)
-    assert "library" not in doc and [c["name"] for c in doc["cells"]] == ["RDP File Created By Uncommon Application"]
-    validate_detection_file(doc)
-    assert build_plan([doc], [detached]).no_op_updates == 1

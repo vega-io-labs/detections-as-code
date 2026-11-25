@@ -358,20 +358,3 @@ def test_an_added_library_detection_read_back_as_null_is_labelled_next_run():
     label_managed_detections({LIBRARY_ID}, [make_vega_library()], SyncReport(), labels, FixedLabel())
     assert labels.attached == [[make_vega_library()["id"]]]
 
-
-TRIAGE_CELL = {"name": "Triage", "query": "", "trigger": False}
-
-
-def test_a_query_less_triage_cell_in_the_tenant_is_not_a_diff():
-    vega = make_vega(cells=[TRIAGE_CELL, *make_vega()["cells"]])
-    assert build_plan([make_yaml()], [vega]).no_op_updates == 1
-
-
-def test_a_trigger_cell_with_an_empty_query_still_diffs():
-    vega = make_vega(cells=[{"name": "trigger", "query": "", "trigger": True}])
-    assert len(build_plan([make_yaml()], [vega]).updates) == 1
-
-
-def test_a_real_extra_cell_still_diffs():
-    vega = make_vega(cells=[{"name": "extra", "query": "@x", "trigger": False}, *make_vega()["cells"]])
-    assert len(build_plan([make_yaml()], [vega]).updates) == 1

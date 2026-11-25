@@ -143,19 +143,9 @@ def normalise_cell_query(query: str | None) -> str:
     return _CELL_REFERENCE_RE.sub("@", (query or "").strip())
 
 
-def query_cells(cells: list[dict[str, Any]] | None) -> list[dict[str, Any]]:
-    # Triage and investigation cells hold skills, not KQL. The API lists them
-    # with an empty query, and a file cannot hold an empty query, so they are
-    # left out on read. Every detection added from the Vega library has one.
-    return [
-        c for c in cells or [] if c.get("trigger") or (c.get("query") or "").strip()
-    ]
-
-
 def _cells_equal(yaml_cells: list, vega_cells: list | None) -> bool:
     if vega_cells is None:
         return False
-    vega_cells = query_cells(vega_cells)
     if len(yaml_cells) != len(vega_cells):
         return False
     yk = sorted(yaml_cells, key=lambda c: c.get("name") or "")

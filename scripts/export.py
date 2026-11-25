@@ -37,7 +37,6 @@ from .reconciler import (
     frequency_equal,
     is_no_op_update,
     normalise_cell_query,
-    query_cells,
 )
 from .skill_reconciler import is_no_op as skill_is_no_op
 from .skill_translator import SkillSpec, parse_skill, split_frontmatter
@@ -316,7 +315,7 @@ def detection_file(
     )
     _set_list(doc, "skillIds", _keep_order(skill_ids, existing.get("skillIds")), existing)
     _ui_owned_unless_set(doc, vega, existing)
-    _cells(doc, query_cells(vega.get("cells")), existing)
+    _cells(doc, list(vega.get("cells") or []), existing)
     return doc
 
 

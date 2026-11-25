@@ -603,7 +603,6 @@ Canonical Vega platform documentation:
 - **Library detections: state only.** The repository adds, removes and sets the state of Vega library detections. Their other fields follow Vega and are edited in the UI. The sync removes a library detection only when it carries the `Managed by Git` label.
 - **No drift detection.** The sync workflow runs on pushes to `main` that touch `detections/**`, `skills/**`, `memories/**` or `scripts/**`, and on manual dispatch. Changes made to a synced detection through the Vega UI between repository syncs persist silently and are reverted to the YAML state on the next sync. There is no warning, alert, or reconciliation report for UI-side edits. Treat the repository as the single source of truth, and run the **Sync ALL detections, skills and memories** workflow periodically to force-reconcile if UI edits are suspected.
 - Lookups and data sources must already exist in the tenant.
-- Triage and investigation cells, which hold skills and no query, are not written to files and are not compared. An update the sync sends carries the detection's query cells, and Vega drops a triage cell then; attach skills with `skillIds`.
 - A merge that fails partway through leaves the tenant in a partially-applied state. Re-running the workflow after fixing the offending YAML converges (idempotent).
 - The Access Key currently requires **Administrator** role; fine-grained scoping is not yet supported.
 - `deleteDetection` is a single-detection API; deletes run one rule at a time. Creates and updates batch in chunks of 100.
