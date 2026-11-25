@@ -10,7 +10,16 @@ from scripts import sync
 from scripts.client import VegaAPIError
 from scripts.reconciler import build_plan, execute_plan
 
-from .conftest import SKILL_ID, make_skill_md, make_vega, make_vega_skill, make_yaml
+from .conftest import (
+    LIBRARY_ID,
+    SKILL_ID,
+    make_library_yaml,
+    make_skill_md,
+    make_vega,
+    make_vega_library,
+    make_vega_skill,
+    make_yaml,
+)
 
 
 class FakeClient:
@@ -22,6 +31,10 @@ class FakeClient:
         self.labels: list[dict[str, Any]] = []
         self.attached: list[tuple[list[str], list[str]]] = []
         self.skill_attached: list[tuple[list[str], list[str]]] = []
+        self.library: set[str] = {LIBRARY_ID}
+        self.looked_up: list[list[str]] = []
+        self.library_calls: list[tuple[list[str], str]] = []
+        self.deleted: list[str] = []
 
     def _step(self, op: str) -> None:
         self.calls.append(op)
@@ -95,6 +108,26 @@ class FakeClient:
     def delete_memory(self, memory_id):
         self._step("delete_memory")
         return {}
+
+    def existing_library_detection_ids(self, ids):
+        self._step("existing_library_detection_ids")
+        self.looked_up.append(list(ids))
+        return set(ids) & self.library
+
+    def set_library_detections_state(self, ids, state):
+        self._step("set_library_detections_state")
+        self.library_calls.append((list(ids), state))
+        return {
+            "results": [
+                {"libraryDetectionId": i, "status": "ADDED", "detection": {"id": "inst-" + i}} for i in ids
+            ],
+            "userErrors": [],
+        }
+
+    def delete_detection(self, detection_id):
+        self._step("delete_detection")
+        self.deleted.append(detection_id)
+        return {"deletedDetectionId": detection_id}
 
 
 @pytest.fixture
@@ -373,3 +406,103 @@ def test_a_rejected_test_mode_create_is_one_failure_with_the_full_error():
     assert "projct eventName, sourceIPAddress" in details
     assert "^^^^^^" in details
     assert "\n" not in sync._error_cell(report.results[0].error)
+
+
+# ---- library detections ------------------------------------------------------
+
+UNKNOWN_LIBRARY_ID = "00000000-0000-4000-8000-000000000999"
+
+
+def _library_file(repo, name="rdp.yaml", **overrides):
+    (repo / "detections" / name).write_text(yaml.safe_dump(make_library_yaml(**overrides)))
+
+
+def test_a_new_library_file_is_added_in_its_state_and_labelled(repo, monkeypatch):
+    _library_file(repo)
+    client = FakeClient()
+    client.labels = [MANAGED]
+    result = run(repo, client, monkeypatch)
+    assert result.exit_code == 0, result.output
+    assert client.looked_up == [[LIBRARY_ID]]
+    assert client.library_calls == [([LIBRARY_ID], "TEST_MODE")]
+    assert "create_detections" not in client.calls
+    assert any("inst-" + LIBRARY_ID in ids for ids, _ in client.attached)
+
+
+def test_a_library_file_already_in_the_tenant_needs_no_lookup(repo, monkeypatch):
+    _library_file(repo)
+    client = FakeClient()
+    client.detections = [make_vega(), make_vega_library(labels=[MANAGED])]
+    client.labels = [MANAGED]
+    result = run(repo, client, monkeypatch)
+    assert result.exit_code == 0, result.output
+    assert "existing_library_detection_ids" not in client.calls
+    assert "set_library_detections_state" not in client.calls
+
+
+def test_a_library_state_change_moves_the_tenant_detection(repo, monkeypatch):
+    _library_file(repo, state="disabled")
+    client = FakeClient()
+    client.detections = [make_vega(), make_vega_library()]
+    result = run(repo, client, monkeypatch)
+    assert result.exit_code == 0, result.output
+    assert client.library_calls == [([LIBRARY_ID], "DISABLED")]
+
+
+def test_an_unknown_library_id_fails_the_dry_run_and_writes_nothing(repo, monkeypatch, tmp_path):
+    summary = tmp_path / "summary.md"
+    monkeypatch.setenv("GITHUB_STEP_SUMMARY", str(summary))
+    _library_file(repo, id=UNKNOWN_LIBRARY_ID)
+    client = FakeClient()
+    result = run(repo, client, monkeypatch, "--dry-run")
+    assert result.exit_code == 1, result.output
+    assert "set_library_detections_state" not in client.calls
+    assert "no Vega library detection has this id" in summary.read_text()
+
+
+def test_an_unknown_library_id_does_not_hold_back_the_other_files(repo, monkeypatch):
+    _library_file(repo)
+    _library_file(repo, "unknown.yaml", id=UNKNOWN_LIBRARY_ID)
+    client = FakeClient()
+    result = run(repo, client, monkeypatch)
+    assert result.exit_code == 1
+    assert client.library_calls == [([LIBRARY_ID], "TEST_MODE")]
+    assert "update_detections" in client.calls
+
+
+def test_a_library_file_with_extra_fields_fails_before_any_write(repo, monkeypatch):
+    _library_file(repo, severity="high")
+    client = FakeClient()
+    result = run(repo, client, monkeypatch)
+    assert result.exit_code != 0
+    assert client.calls == []
+
+
+def test_a_removed_library_file_removes_only_a_labelled_library_detection(repo, monkeypatch):
+    client = FakeClient()
+    client.detections = [
+        make_vega(),
+        make_vega_library(labels=[MANAGED]),
+        make_vega_library(id="untouched", externalId="435fb46e-7b61-43f9-90e2-6085b95255c9"),
+    ]
+    result = run(repo, client, monkeypatch)
+    assert result.exit_code == 0, result.output
+    assert client.deleted == [make_vega_library()["id"]]
+
+
+def test_no_deletes_keeps_a_labelled_library_detection(repo, monkeypatch):
+    client = FakeClient()
+    client.detections = [make_vega(), make_vega_library(labels=[MANAGED])]
+    result = run(repo, client, monkeypatch, "--no-deletes")
+    assert result.exit_code == 0, result.output
+    assert "delete_detection" not in client.calls
+
+
+def test_dry_run_plans_library_adds_without_writing(repo, monkeypatch):
+    _library_file(repo)
+    client = FakeClient()
+    result = run(repo, client, monkeypatch, "--dry-run")
+    assert result.exit_code == 0, result.output
+    assert "add from library" in result.output
+    assert "set_library_detections_state" not in client.calls
+    assert "get the 'Managed by Git' label" in result.output

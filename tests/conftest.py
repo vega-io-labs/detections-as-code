@@ -138,3 +138,34 @@ def make_vega_skill(**overrides: Any) -> dict[str, Any]:
     }
     base.update(overrides)
     return base
+
+
+LIBRARY_ID = "ee3a5b55-c702-4f63-9e46-37e01aae301f"
+LIBRARY_NAME = ".RDP File Created By Uncommon Application"
+
+
+def make_library_yaml(**overrides: Any) -> dict[str, Any]:
+    base: dict[str, Any] = {
+        "id": LIBRARY_ID,
+        "name": LIBRARY_NAME,
+        "library": True,
+        "state": "test_mode",
+    }
+    base.update(overrides)
+    return base
+
+
+def make_vega_library(**overrides: Any) -> dict[str, Any]:
+    """A library detection the tenant added, as getDetections returns it."""
+    base = make_vega(
+        id="01a2127a-ef7b-76a2-abc3-87b849f43419",
+        externalId=LIBRARY_ID,
+        name=LIBRARY_NAME,
+        severity="MEDIUM",
+        state="TEST_MODE",
+        createdBy={"principalType": "vega_library"},
+        labels=[{"id": "lbl-tag", "name": "windows,file_event"}],
+        cells=[{"name": "RDP File Created By Uncommon Application", "query": "@EDR-Events | take 1", "trigger": True}],
+    )
+    base.update(overrides)
+    return base

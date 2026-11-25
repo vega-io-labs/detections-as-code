@@ -513,6 +513,21 @@ Only data sources with a configured connector in your tenant are
 queryable. The sync workflow's `createDetections` call rejects detections
 that reference data sources that are not connected.
 
+## Library detection files
+
+A detection added from the Vega library has a short file with four keys.
+See the README section "Vega library detections" for what each change does.
+
+| Key | Rule |
+|---|---|
+| `id` | Required. The id of the detection in the Vega library, a lowercase UUID. The tenant's copy has it as its `externalId`, so it does not change when the detection is removed and added again. |
+| `name` | Optional, a non-empty string when set. For reading only: the sync never sends it, and the pull keeps it in step with Vega. |
+| `library` | Required, `true`. Marks the file as a library file. |
+| `state` | Required. `enabled`, `disabled` or `test_mode` (also `test` / `test-mode`). A missing library detection is added in this state. |
+
+Any other key fails the PR check. The sync looks each new id up in the
+library before it writes anything, and blocks an id that is not there.
+
 ## Fields the YAML schema does NOT expose
 
 | Field | Why omitted |
@@ -551,6 +566,7 @@ the check runs without tenant access and cannot tell which a YAML will become.
 | Exactly one of `query` / `cells` is present (not both, not neither) | translator | PR red |
 | Multi-cell with exactly one trigger cell, names unique and non-empty | translator | PR red |
 | Cell names outside `[A-Za-z0-9 _-]` | translator | PR yellow - warning only, fatal only if the detection is new |
+| Library files carry only `id`, `name`, `library: true`, `state`; `id` is a lowercase UUID | translator | PR red, extra keys named |
 
 ## Validated at sync time (post-merge)
 
@@ -565,3 +581,4 @@ workflow runs without a tenant secret, so it also passes on fork PRs).
 | `mitreTechniques` exist in the ATT&CK catalogue | `createDetections` rejects unknown technique IDs |
 | `groupingField`, `actorFields`, `targetFields` are normalized fields in your tenant | `createDetections` rejects with `... is not a valid normalized field` |
 | KQL semantic correctness (does it match the right events?) | Runtime (you'll see it in detection hits or lack of them) |
+| A library file's `id` is in the Vega library | The sync and its dry run block the file |

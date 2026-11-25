@@ -41,7 +41,7 @@ from .consts import (
 )
 from .memory_translator import MemorySpec, memory_warnings, parse_memory
 from .skill_translator import parse_skill
-from .translator import create_only_warnings, yaml_to_create_input
+from .translator import create_only_warnings, validate_detection_file
 from .utils import duplicate_message, skill_files, yaml_files
 
 console = Console()
@@ -141,7 +141,7 @@ def schema_check(file_path: Path) -> FileCheck:
         check.schema_error = "empty file"
         return check
     try:
-        yaml_to_create_input(doc)
+        validate_detection_file(doc)
         check.schema_ok = True
         check.warnings = create_only_warnings(doc)
     except (ValueError, KeyError) as e:

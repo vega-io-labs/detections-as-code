@@ -512,6 +512,60 @@ def yaml_to_create_input(detection: dict[str, Any]) -> dict[str, Any]:
     return payload
 
 
+LIBRARY_KEYS: frozenset[str] = frozenset({"id", "name", "library", "state"})
+
+
+def is_library_file(detection: dict[str, Any]) -> bool:
+    return "library" in detection
+
+
+def library_state_input(detection: dict[str, Any]) -> dict[str, Any]:
+    """The library detection id, name and state a library file asks for.
+
+    Only `state` is synced: until the API can save overrides on a library
+    detection without detaching it, any other field would either be ignored or
+    turn the detection into a copy that no longer gets Vega's updates.
+    """
+    ext_id = str(detection.get("id") or "").strip()
+    where = ext_id or "<no id>"
+    if detection["library"] is not True:
+        raise ValueError(
+            f"{where}: 'library' must be true. Remove the key for a detection "
+            f"written in this repository"
+        )
+    if not ext_id:
+        raise ValueError(f"{where}: missing required field 'id'")
+    if not _UUID_RE.match(ext_id) or ext_id != ext_id.lower():
+        raise ValueError(
+            f"{where}: 'id' of a library detection must be its id in the Vega "
+            f"library, a lowercase UUID"
+        )
+    extra = sorted(str(k) for k in set(detection) - LIBRARY_KEYS)
+    if extra:
+        raise ValueError(
+            f"{where}: {', '.join(repr(k) for k in extra)} cannot be set on a "
+            f"Vega library detection. Only 'state' is synced; Vega keeps the "
+            f"rest up to date. Remove the key(s)"
+        )
+    if detection.get("state") is None:
+        raise ValueError(f"{where}: missing required field 'state'")
+    name = detection.get("name")
+    if name is not None and (not isinstance(name, str) or not name.strip()):
+        raise ValueError(f"{where}: 'name' must be a non-empty string")
+    return {
+        "libraryDetectionId": ext_id,
+        "name": (name or ext_id).strip(),
+        "state": _state_to_enum(detection["state"]).value,
+    }
+
+
+def validate_detection_file(detection: dict[str, Any]) -> None:
+    if is_library_file(detection):
+        library_state_input(detection)
+    else:
+        yaml_to_create_input(detection)
+
+
 def create_only_warnings(detection: dict[str, Any]) -> list[str]:
     """Rules the API applies to new detections but not to updates.
 
@@ -521,6 +575,8 @@ def create_only_warnings(detection: dict[str, Any]) -> list[str]:
     back every detection sent with it.
     """
     warnings: list[str] = []
+    if is_library_file(detection):
+        return warnings
     cells = _resolve_cells_field(detection) or []
     for i, cell in enumerate(cells):
         name = cell.get("name") if isinstance(cell, dict) else None

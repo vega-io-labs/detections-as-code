@@ -7,7 +7,7 @@ from typing import Any, Generic, Literal, TypeVar
 
 P = TypeVar("P")
 
-ActionKind = Literal["create", "update", "delete", "set_state", "label"]
+ActionKind = Literal["create", "add", "update", "delete", "set_state", "label"]
 Target = Literal["detection", "memory", "skill"]
 
 

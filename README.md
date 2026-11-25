@@ -235,6 +235,25 @@ Four annotated patterns are provided under `docs/`. Copy the file that most clos
 
 For a blank placeholder template (single-cell skeleton), use [`docs/detection.template.yaml`](docs/detection.template.yaml).
 
+## Vega library detections
+
+Detections you add from the Vega library live in your configured detections next to the custom ones, and the repository tracks them too. A library detection gets a short file: Vega keeps its query and settings up to date, so the file holds only what the repository controls, which is whether it runs.
+
+```yaml
+id: ee3a5b55-c702-4f63-9e46-37e01aae301f   # the id of the detection in the Vega library
+name: .RDP File Created By Uncommon Application   # shown for reading; Vega owns it
+library: true
+state: test_mode    # enabled | disabled | test_mode
+```
+
+- **Add one from Git.** Commit a file like the one above with the library id, which is in the library in the Vega UI or in the `listLibraryDetections` API. After merge the sync adds it to the tenant straight in the given `state`; it stays connected to the library, so Vega's updates keep reaching it. When no library detection has that id, the sync and its dry run report the file as blocked and add nothing; the pull request check has no tenant access, so it cannot see this.
+- **Turn one on, off, or into test mode.** Change `state`. Nothing else is sent.
+- **Remove one.** Delete the file. The sync removes the detection from your configured detections; it stays in the library and can be added again. Only library detections the repository added or tracks, which carry the [`Managed by Git`](#the-managed-by-git-label) label, are removed this way, so a repository that never had library files removes none.
+- **Added in the UI.** The [pull workflow](#changes-made-in-vega) opens a pull request with its file. Once merged, the sync labels it and manages it like the others.
+- **Other fields cannot be set.** `severity`, `query`, `cells`, `skillIds` and any other key fail the pull request check. Editing those fields of a library detection is not synced yet.
+- **Detached in the UI.** Detaching makes it your own copy with the same id. The next pull rewrites its file as a regular detection file without `library: true`, and from then on it is synced like any custom detection. Until that pull request is merged, the sync reports the library file as blocked and leaves the detection alone.
+- `library: true` is written by the pull; set it by hand only when adding a library detection as above. A regular detection file whose `id` belongs to a library detection in the tenant is blocked rather than synced, because writing a library detection's fields would turn it into a copy that no longer gets Vega's updates. Let the pull rewrite the file.
+
 ## Skills
 
 A skill is a set of instructions Vega agents follow for one kind of work: how to triage a class of alert, how to investigate an incident, how to tune or hunt. Skills live under `skills/`, one folder per skill holding a `SKILL.md`, in any layout:
@@ -349,7 +368,7 @@ The sync puts the `Managed by Git` label on every detection, skill and memory it
 - **Skills.** A skill gets the label when the sync creates or updates it. Vega's API does not report a skill's labels, so the sync cannot see which skills lack it: a skill that has not changed since you added this template version, or whose label was removed in the UI, gets it the next time its `SKILL.md` changes. Labels you add to a skill in the UI stay.
 - **Memories.** The label is how the sync knows which memories it manages. See [Memories](#memories).
 
-- Filter the Vega UI by the label to see what the repository owns. Detections and skills made in the UI, memories written in the UI or learned by Vega, and Vega library content are never labelled.
+- Filter the Vega UI by the label to see what the repository owns. Detections and skills made in the UI, memories written in the UI or learned by Vega, and Vega library skills are never labelled. Library detections that have a file here are.
 - The label is a marker, not a lock. A teammate can still edit a labelled detection or skill in the UI. The next sync overwrites that edit, unless the [pull workflow](#changes-made-in-vega) brings it back as a pull request first and it is merged.
 - The sync only adds this one label. Other labels set in the UI stay. The pull workflow never writes labels to detection files, so the label never shows up in a pull request.
 - A dry run says what would get the label, and writes nothing.
@@ -367,7 +386,7 @@ Every 10 minutes, or when you run it from the Actions tab, the workflow logs in 
 | In Vega | In the repository |
 |---|---|
 | A detection, skill or labelled memory was edited | Its file is updated. Only the keys whose values moved are touched; comments, key order and quoting in the rest of the file are kept, list items that stay keep their place and their comments, and a value the tenant cleared back to its default takes its key with it (a default the file spells out, like `references: []`, stays). |
-| A detection was created in the UI or through the API | A new file `detections/<name>.yaml` is added, with the detection's own id. Vega library detections are not pulled; a skill made in the UI (no `id`) and a memory without the `Managed by Git` label are not pulled either, exactly as the sync does not touch them. |
+| A detection was created in the UI or through the API | A new file `detections/<name>.yaml` is added, with the detection's own id. A detection added from the Vega library gets a [library file](#vega-library-detections) with its state. A skill made in the UI (no `id`) and a memory without the `Managed by Git` label are not pulled either, exactly as the sync does not touch them. |
 | A skill or memory the repository manages was created through the API | A new `skills/<name>/SKILL.md` or `memories/<title>.yaml` is added. |
 | A detection, skill or memory was deleted | Its file is removed; for a skill, the whole folder of its `SKILL.md`. A file whose title matches a memory that lost its label is left in place and noted, because the sync blocks on it rather than creating a duplicate. |
 | A memory was retitled | Memory files carry no id, so a retitle would read as a deletion plus a creation. When exactly one file and one memory are left unmatched with the same content, the file is edited in place instead (comments kept) and shown as a rename; a file named after its old title is renamed after the new one. |
@@ -389,7 +408,7 @@ Who made the change is not in the pull request. The sync and pull use one access
 If the tenant already holds custom detections when you adopt this repository, the pull is the way to bring them in; `Sync ALL` goes the other way and would delete them.
 
 1. Run **Pull tenant changes into a pull request** by hand (Actions → the workflow → Run workflow). It opens one pull request that adds a file for every custom detection in the tenant, including the ones made in the Vega UI (Vega gives those an `externalId` equal to their id, so the sync manages them from then on).
-2. Vega library detections are not included. Skills are pulled only if a `skills/` folder exists in the repository, memories only if they carry the `Managed by Git` label.
+2. Library detections the tenant runs are included as [library files](#vega-library-detections), one per detection, so on a tenant with many of them this pull request is long. Skills are pulled only if a `skills/` folder exists in the repository, memories only if they carry the `Managed by Git` label.
 3. The template's example detection, `detections/mimikatz-credential-theft-crowdstrike.yaml`, shows up as a removal when the tenant does not have it. Delete the file before the first pull, or keep it by restoring the file in the pull request.
 4. On a large tenant the pull request is large, and every check that runs on pull requests runs on all of it, so expect it to take a while.
 5. After merging, the sync that follows should plan nothing. A `Sync ALL` dry run confirms it.
@@ -525,6 +544,8 @@ Inside Vega, each merged change appears as a row in the detection's version-hist
 | Validate fails with `unknown field 'enabled'` (or `name`, `id`) on a memory | The memory schema uses `status`, `title`, and has no id. | Rename the key as the message says. |
 | Validate warns `'expiresAt' ... is in the past` | The memory has expired. | Delete the file, or move the date forward. A new memory with a past date fails the sync. |
 | Validate fails with `'lookBackSeconds' must be >= the Ns 'frequencyCron' interval` | The lookback window is shorter than the schedule, which would skip data between runs. | Raise `lookBackSeconds` to at least the interval, or shorten `frequencyCron`. |
+| Validate fails with `... cannot be set on a Vega library detection` | A [library file](#vega-library-detections) carries a key other than `id`, `name`, `library` and `state`. | Remove the key. The other fields of a library detection follow Vega. |
+| Validate fails with `'id' of a library detection must be its id in the Vega library` | A library file's `id` is not a lowercase UUID. | Copy the id from the Vega library. |
 
 ### Sync at merge time
 
@@ -533,6 +554,9 @@ Inside Vega, each merged change appears as a row in the detection's version-hist
 | Sync fails with `table selectors not found: @X` | Your tenant does not have a connector configured for that data source. | Onboard the connector in the Vega UI before merging, or remove the detection. |
 | Sync fails with `cells: trigger cell query cannot be compiled: ...` (or `parse pipeline query language`) | KQL error, such as a misspelled operator. The PR check reads only the YAML, so it shows only after the merge. The full message, with the line and a caret under the bad token, is under **Errors** in the workflow log and the run summary. The detection is not created and its id is not used up; the rest of the repository still syncs. | Fix the KQL in a follow-up PR. |
 | Sync fails with `external_id "..." already exists` | That id was previously used. | Generate a new UUID; old ids remain reserved permanently. |
+| Sync or its dry run reports a library file as blocked: `no Vega library detection has this id` | The `id` of a new library file is not in the Vega library. | Copy the right id from the library in the Vega UI or from `listLibraryDetections`. |
+| Sync reports a library file as blocked: `no longer connected to the Vega library` | The detection was detached in the UI and is now your own copy. | Merge the pull workflow's pull request, which rewrites the file as a regular detection, or run the pull. |
+| Sync reports a detection as blocked: `this id is a Vega library detection in the tenant` | A regular detection file uses the id of a library detection. | Merge the pull workflow's pull request, which rewrites it as a library file. |
 | Sync exits non-zero and a chunk reports `rolled back: ...` | One detection in that chunk failed validation, and the chunk is applied as a single transaction. | Fix the detections whose rows carry a real API error; the rolled-back ones need no change and land on the next run. |
 | Sync fails with `login_machine failed: 500 ... INTERNAL_SERVER_ERROR` | The access key is inactive - deactivated or past its expiry date. | Create a new access key in the Vega UI and update the `VEGA_ACCESS_KEY` and `VEGA_ACCESS_KEY_ID` secrets. |
 | Authentication succeeds, then every API call fails with HTTP 400 `X-Vega-Key-Id header is required` | The key was created on or after 2026-06-18 and `VEGA_ACCESS_KEY_ID` is unset or holds the wrong id. The key exchange itself is unauthenticated, which is why it gets that far. | Set the `VEGA_ACCESS_KEY_ID` repository secret to that key's own id, as shown next to it in the Vega UI. |
@@ -576,9 +600,10 @@ Canonical Vega platform documentation:
 
 ## Limitations (v1)
 
-- **Custom detections only.** This template manages tenant-custom detections authored as YAML in this repository. Vega's built-in library detections are not in scope; manage those through the Vega UI. The sync never deletes a library detection, even though the API lists them next to the custom ones.
+- **Library detections: state only.** The repository adds, removes and sets the state of Vega library detections. Their other fields follow Vega and are edited in the UI. The sync removes a library detection only when it carries the `Managed by Git` label.
 - **No drift detection.** The sync workflow runs on pushes to `main` that touch `detections/**`, `skills/**`, `memories/**` or `scripts/**`, and on manual dispatch. Changes made to a synced detection through the Vega UI between repository syncs persist silently and are reverted to the YAML state on the next sync. There is no warning, alert, or reconciliation report for UI-side edits. Treat the repository as the single source of truth, and run the **Sync ALL detections, skills and memories** workflow periodically to force-reconcile if UI edits are suspected.
 - Lookups and data sources must already exist in the tenant.
+- Triage and investigation cells, which hold skills and no query, are not written to files and are not compared. An update the sync sends carries the detection's query cells, and Vega drops a triage cell then; attach skills with `skillIds`.
 - A merge that fails partway through leaves the tenant in a partially-applied state. Re-running the workflow after fixing the offending YAML converges (idempotent).
 - The Access Key currently requires **Administrator** role; fine-grained scoping is not yet supported.
 - `deleteDetection` is a single-detection API; deletes run one rule at a time. Creates and updates batch in chunks of 100.

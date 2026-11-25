@@ -1,10 +1,18 @@
 from __future__ import annotations
 
 import pytest
+import yaml
 
-from scripts.translator import yaml_to_create_input, yaml_to_update_input
+from scripts.pr_validate import schema_check
+from scripts.translator import (
+    create_only_warnings,
+    library_state_input,
+    validate_detection_file,
+    yaml_to_create_input,
+    yaml_to_update_input,
+)
 
-from .conftest import make_yaml
+from .conftest import LIBRARY_ID, LIBRARY_NAME, make_library_yaml, make_yaml
 
 
 def test_create_payload_sends_mode_and_skill_ids_not_type():
@@ -126,3 +134,104 @@ def test_skills_outside_alert_mode_are_rejected(mode):
     with pytest.raises(ValueError, match="must be empty in"):
         yaml_to_create_input(make_yaml(mode=mode, skillIds=["s1"]))
     assert yaml_to_create_input(make_yaml(mode=mode, skillIds=[]))["skillIds"] == []
+
+
+# ---- library files -----------------------------------------------------------
+
+@pytest.mark.parametrize(
+    "state,expected",
+    [("enabled", "ENABLED"), ("disabled", "DISABLED"), ("test_mode", "TEST_MODE"),
+     ("test", "TEST_MODE"), ("TEST-MODE", "TEST_MODE"), ("Enabled", "ENABLED")],
+)
+def test_library_file_becomes_a_library_state_input(state, expected):
+    assert library_state_input(make_library_yaml(state=state)) == {
+        "libraryDetectionId": LIBRARY_ID, "name": LIBRARY_NAME, "state": expected,
+    }
+
+
+def test_library_file_without_a_name_is_named_by_its_id():
+    doc = make_library_yaml()
+    del doc["name"]
+    assert library_state_input(doc)["name"] == LIBRARY_ID
+
+
+@pytest.mark.parametrize("value", [False, "true", "yes", 1, None])
+def test_library_must_be_true(value):
+    with pytest.raises(ValueError, match="'library' must be true"):
+        library_state_input(make_library_yaml(library=value))
+
+
+@pytest.mark.parametrize(
+    "bad_id",
+    [LIBRARY_ID.upper(), "root-login", "019e0000-0000-7000-8000-00000000000", f"{LIBRARY_ID}x", 42],
+)
+def test_library_id_must_be_a_lowercase_uuid(bad_id):
+    with pytest.raises(ValueError, match="must be its id in the Vega library"):
+        library_state_input(make_library_yaml(id=bad_id))
+
+
+def test_library_file_without_an_id_fails():
+    doc = make_library_yaml()
+    del doc["id"]
+    with pytest.raises(ValueError, match="missing required field 'id'"):
+        library_state_input(doc)
+
+
+def test_library_id_with_spaces_around_it_is_trimmed():
+    assert library_state_input(make_library_yaml(id=f"  {LIBRARY_ID} "))["libraryDetectionId"] == LIBRARY_ID
+
+
+def test_every_field_but_state_is_rejected_on_a_library_file_and_named():
+    doc = make_library_yaml(severity="high", query="@x", skillIds=["s"], cells=[])
+    with pytest.raises(ValueError) as e:
+        library_state_input(doc)
+    assert "'cells', 'query', 'severity', 'skillIds' cannot be set" in str(e.value)
+    assert "Only 'state' is synced" in str(e.value)
+
+
+@pytest.mark.parametrize("state", [None, "draft", "on", ""])
+def test_library_state_is_required_and_must_be_known(state):
+    with pytest.raises(ValueError, match="state"):
+        library_state_input(make_library_yaml(state=state))
+
+
+def test_library_state_key_missing_fails():
+    doc = make_library_yaml()
+    del doc["state"]
+    with pytest.raises(ValueError, match="missing required field 'state'"):
+        library_state_input(doc)
+
+
+@pytest.mark.parametrize("name", ["", "   ", 7, ["a"]])
+def test_library_name_must_be_a_non_empty_string(name):
+    with pytest.raises(ValueError, match="'name' must be a non-empty string"):
+        library_state_input(make_library_yaml(name=name))
+
+
+def test_validate_detection_file_picks_the_library_rules():
+    validate_detection_file(make_library_yaml())
+    validate_detection_file(make_yaml())
+    with pytest.raises(ValueError, match="missing required field 'severity'"):
+        validate_detection_file({"id": "x", "name": "n", "state": "enabled"})
+
+
+def test_removing_library_true_makes_it_an_incomplete_custom_file():
+    doc = make_library_yaml()
+    del doc["library"]
+    with pytest.raises(ValueError, match="missing required field"):
+        validate_detection_file(doc)
+
+
+def test_library_files_have_no_create_warnings():
+    assert create_only_warnings(make_library_yaml()) == []
+
+
+def test_pr_check_accepts_a_library_file_and_names_a_bad_one(tmp_path):
+    good = tmp_path / "good.yaml"
+    good.write_text(yaml.safe_dump(make_library_yaml()))
+    bad = tmp_path / "bad.yaml"
+    bad.write_text(yaml.safe_dump(make_library_yaml(query="@x | take 1")))
+    ok = schema_check(good)
+    assert ok.schema_ok and ok.warnings == []
+    failed = schema_check(bad)
+    assert not failed.schema_ok and "'query' cannot be set on a Vega library detection" in failed.schema_error
